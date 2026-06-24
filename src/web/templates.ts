@@ -107,6 +107,20 @@ export function settingsPage(settings: RuntimeSettings): string {
         ${["off", "minimal", "low", "medium", "high", "xhigh"].map((level) => `<option value="${level}" ${settings.ai.thinkingLevel === level ? "selected" : ""}>${level}</option>`).join("")}
       </select>
 
+      <h2>Conversation Memory</h2>
+      <label><input name="memoryEnabled" type="checkbox" value="true" ${settings.memory.enabled ? "checked" : ""} style="width:auto"> Enable conversation memory</label>
+      <label>Memory Scope</label>
+      <select name="memoryScope">
+        <option value="channel_user" ${settings.memory.scope === "channel_user" ? "selected" : ""}>Channel/thread + user</option>
+        <option value="channel" ${settings.memory.scope === "channel" ? "selected" : ""}>Shared channel/thread</option>
+      </select>
+      <label>Max Messages To Remember</label>
+      <input name="memoryMaxMessages" type="number" min="0" max="50" value="${settings.memory.maxMessages}">
+      <label>Memory TTL Hours</label>
+      <input name="memoryTtlHours" type="number" min="1" max="720" value="${settings.memory.ttlHours}">
+      <label><input name="memoryIncludeBotReplies" type="checkbox" value="true" ${settings.memory.includeBotReplies ? "checked" : ""} style="width:auto"> Include bot replies in memory</label>
+      <p class="muted">Discord threads use their thread channel ID, so each thread gets separate memory. Channel/thread + user is the safest default.</p>
+
       <h2>Repair Policy</h2>
       <label><input name="repairRequireConfirmation" type="checkbox" value="true" ${settings.repair.requireConfirmation ? "checked" : ""} style="width:auto"> Require confirmation for repair actions</label>
       <label><input name="repairAllowDestructive" type="checkbox" value="true" ${settings.repair.allowDestructive ? "checked" : ""} style="width:auto"> Allow destructive repair actions</label>

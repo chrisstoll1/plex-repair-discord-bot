@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import type { AppConfig } from "../config.js";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { RuntimeSettings } from "../domain/settings.js";
+import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { REPAIRMAN_INSTRUCTIONS } from "./instructions.js";
@@ -21,6 +22,7 @@ export type AgentRequestContext = {
   channelId: string;
   userId: string;
   roles: string[];
+  recentMessages?: ConversationMessage[];
 };
 
 export class PiAgentService {
@@ -71,11 +73,15 @@ export class PiAgentService {
       }
     });
 
+    const { recentMessages, ...discordContext } = context;
     const prompt = [
-      `Discord context: ${JSON.stringify(context)}`,
+      `Discord context: ${JSON.stringify(discordContext)}`,
       `Repair policy: ${JSON.stringify(settings.repair)}`,
+      formatRecentMessages(recentMessages),
       `User request: ${message}`,
-    ].join("\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     try {
       await session.prompt(prompt);
@@ -131,6 +137,16 @@ export class PiAgentService {
             }
           }
 
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "list_plex_libraries",
+        label: "List Plex libraries",
+        description: "List Plex library sections and their IDs. Use this before refreshing a Plex library section.",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const results = await clients().plex.getLibrarySections();
           return toolResponse(results);
         },
       }),
@@ -213,6 +229,25 @@ export class PiAgentService {
           if (policy) return policy;
 
           const results = await clients().radarr.triggerMovieSearch(params.movieId);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "refresh_plex_library_section",
+        label: "Refresh Plex library section",
+        description: "Trigger Plex to scan/refresh a specific library section by section ID. Requires confirmation when configured.",
+        parameters: Type.Object({
+          sectionId: Type.Number({ description: "Plex library section ID, from list_plex_libraries" }),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: { sectionId: number; confirmed?: boolean }) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Refresh Plex library section ID ${params.sectionId}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().plex.refreshLibrarySection(params.sectionId);
           return toolResponse(results);
         },
       }),
@@ -509,6 +544,17 @@ export class PiAgentService {
       }),
     ];
   }
+}
+
+function formatRecentMessages(messages: ConversationMessage[] | undefined): string | undefined {
+  if (!messages?.length) return undefined;
+
+  const lines = messages.map((message) => {
+    const speaker = message.role === "assistant" ? "Assistant" : `User${message.userId ? ` ${message.userId}` : ""}`;
+    return `${speaker}: ${message.content.replace(/\s+/g, " ").slice(0, 1200)}`;
+  });
+
+  return `Recent conversation for context only. The newest user request is authoritative:\n${lines.join("\n")}`;
 }
 
 function toolResponse(results: unknown) {

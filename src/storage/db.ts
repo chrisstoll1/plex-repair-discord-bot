@@ -33,5 +33,18 @@ function migrate(db: AppDatabase): void {
       details TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_key TEXT NOT NULL,
+      role TEXT NOT NULL,
+      user_id TEXT,
+      message_id TEXT,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_key_created
+      ON conversation_messages (conversation_key, created_at);
   `);
 }

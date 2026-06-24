@@ -21,6 +21,7 @@ It is built for common home media-server workflows like missing movies, missing 
 - Monitoring updates for Radarr movies, Sonarr series, and Sonarr seasons.
 - Repair policy controls for confirmation prompts and destructive actions.
 - Repair role restrictions for limiting who can run repair actions.
+- Configurable conversation memory for follow-up messages in channels, threads, and DMs.
 - OpenAI Codex device-code auth through Pi Coding Agent.
 
 ## How It Works
@@ -151,9 +152,10 @@ Recommended TrueNAS notes:
 8. Configure Radarr URL and API key.
 9. Configure Plex URL and token.
 10. Choose repair policy settings.
-11. Save settings.
-12. Go to `Pi Auth` and connect OpenAI Codex auth with the device-code flow.
-13. Check `Health` to confirm all services are reachable.
+11. Choose conversation memory settings.
+12. Save settings.
+13. Go to `Pi Auth` and connect OpenAI Codex auth with the device-code flow.
+14. Check `Health` to confirm all services are reachable.
 
 The portal intentionally has no built-in authentication. Run it only on a trusted network or put it behind a reverse proxy with access controls.
 
@@ -221,6 +223,12 @@ Check why something is not in Plex:
 @Plex Repairman Plex does not show Chainsaw Man episode 3, can you check Sonarr and Plex?
 ```
 
+Refresh a Plex library section:
+
+```text
+@Plex Repairman refresh my Plex TV library
+```
+
 Ask before a repair:
 
 ```text
@@ -228,6 +236,35 @@ Ask before a repair:
 ```
 
 The bot should explain what it found and ask for confirmation before policy-controlled repair actions.
+
+## Conversation Memory
+
+Conversation memory is configured in the Settings page.
+
+Available settings:
+
+- `Enable conversation memory`: turns recent-message context on or off.
+- `Memory Scope`: controls whether memory is per user or shared by everyone in a channel/thread.
+- `Max Messages To Remember`: limits how many recent turns are included in the next prompt.
+- `Memory TTL Hours`: expires older stored messages.
+- `Include bot replies in memory`: lets follow-up messages include what the bot previously said.
+
+Default behavior:
+
+- Memory is enabled.
+- Scope is `Channel/thread + user`.
+- Up to 10 recent messages are remembered.
+- Messages expire after 24 hours.
+- Bot replies are included.
+
+Discord threads use their own Discord channel ID, so each thread gets separate memory. If you configure allowed channel IDs, remember that a Discord thread has a different channel ID than its parent channel.
+
+Scope options:
+
+- `Channel/thread + user`: safest default. Each user gets separate memory within a channel or thread.
+- `Shared channel/thread`: collaborative mode. Everyone in the channel or thread shares the same recent context.
+
+Memory is used only as prompt context. The app still creates a fresh AI session for each Discord message.
 
 ## Repair Policy
 

@@ -29,6 +29,15 @@ export class PlexClient {
     return this.requestText(`/search?query=${encodeURIComponent(query)}`);
   }
 
+  async getLibrarySections(): Promise<string> {
+    return this.requestText("/library/sections");
+  }
+
+  async refreshLibrarySection(sectionId: number): Promise<{ refreshTriggered: true; sectionId: number; response?: string }> {
+    const response = await this.requestText(`/library/sections/${sectionId}/refresh`);
+    return { refreshTriggered: true, sectionId, ...(response ? { response } : {}) };
+  }
+
   private async requestText(path: string): Promise<string> {
     if (!this.settings.url || !this.settings.token) {
       throw new Error("Plex is not configured");

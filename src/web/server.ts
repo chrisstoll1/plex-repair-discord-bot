@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import type { Logger } from "pino";
-import { aiSettingsSchema, readRuntimeSettings } from "../domain/settings.js";
+import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings } from "../domain/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { DiscordBotService } from "../discord/bot.js";
@@ -51,6 +51,16 @@ export async function createWebServer(
       thinkingLevel: body.aiThinkingLevel,
     });
     store.setJson("ai", ai);
+    store.setJson(
+      "memory",
+      memorySettingsSchema.parse({
+        enabled: body.memoryEnabled === "true",
+        scope: body.memoryScope,
+        maxMessages: body.memoryMaxMessages,
+        ttlHours: body.memoryTtlHours,
+        includeBotReplies: body.memoryIncludeBotReplies === "true",
+      }),
+    );
     store.setJson("repair", {
       requireConfirmation: body.repairRequireConfirmation === "true",
       allowDestructive: body.repairAllowDestructive === "true",

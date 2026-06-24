@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommand
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
+import type { ConversationStore } from "../storage/conversation.js";
 import type { PiAgentService } from "../agent/pi-agent.js";
 
 export class DiscordBotService {
@@ -9,6 +10,7 @@ export class DiscordBotService {
 
   constructor(
     private readonly store: SettingsStore,
+    private readonly conversations: ConversationStore,
     private readonly agent: PiAgentService,
     private readonly logger: Logger,
   ) {}
@@ -69,12 +71,42 @@ export class DiscordBotService {
 
       try {
         const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
+        const conversationKey = getConversationKey({
+          guildId: message.guildId,
+          channelId: message.channelId,
+          userId: message.author.id,
+          scope: latest.memory.scope,
+        });
+        const recentMessages = latest.memory.enabled
+          ? this.conversations.getRecent(conversationKey, latest.memory.maxMessages, latest.memory.ttlHours)
+          : [];
         const response = await this.agent.runDiscordRequest(content, {
           guildId: message.guildId ?? undefined,
           channelId: message.channelId,
           userId: message.author.id,
           roles,
+          recentMessages,
         });
+
+        if (latest.memory.enabled) {
+          this.conversations.prune(latest.memory.ttlHours);
+          this.conversations.addMessage({
+            conversationKey,
+            role: "user",
+            userId: message.author.id,
+            messageId: message.id,
+            content,
+            createdAt: message.createdAt,
+          });
+          if (latest.memory.includeBotReplies) {
+            this.conversations.addMessage({
+              conversationKey,
+              role: "assistant",
+              userId: client.user.id,
+              content: response,
+            });
+          }
+        }
 
         await message.reply(truncateDiscord(response));
       } catch (error) {
@@ -111,6 +143,11 @@ export class DiscordBotService {
       this.logger.warn({ err: error }, "Failed to register Discord health command");
     }
   }
+}
+
+function getConversationKey(params: { guildId: string | null; channelId: string; userId: string; scope: "channel_user" | "channel" }): string {
+  const base = params.guildId ? `guild:${params.guildId}:channel:${params.channelId}` : `dm:${params.userId}`;
+  return params.scope === "channel_user" && params.guildId ? `${base}:user:${params.userId}` : base;
 }
 
 function isAllowed(value: string | null, allowed: Set<string>): boolean {

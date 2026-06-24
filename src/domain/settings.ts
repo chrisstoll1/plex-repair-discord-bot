@@ -27,10 +27,19 @@ export const aiSettingsSchema = z.object({
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
 });
 
+export const memorySettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  scope: z.enum(["channel_user", "channel"]).default("channel_user"),
+  maxMessages: z.coerce.number().int().min(0).max(50).default(10),
+  ttlHours: z.coerce.number().int().min(1).max(720).default(24),
+  includeBotReplies: z.boolean().default(true),
+});
+
 export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
 export type ArrSettings = z.infer<typeof arrSettingsSchema>;
 export type PlexSettings = z.infer<typeof plexSettingsSchema>;
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
+export type MemorySettings = z.infer<typeof memorySettingsSchema>;
 
 export type RuntimeSettings = {
   discord: DiscordSettings;
@@ -38,6 +47,7 @@ export type RuntimeSettings = {
   radarr: ArrSettings;
   plex: PlexSettings;
   ai: AiSettings;
+  memory: MemorySettings;
   repair: {
     requireConfirmation: boolean;
     allowDestructive: boolean;
@@ -67,6 +77,15 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
       token: store.getString("plex.token") ?? "",
     },
     ai: store.getJson("ai", aiSettingsSchema.parse({})),
+    memory: memorySettingsSchema.parse(
+      store.getJson("memory", {
+        enabled: true,
+        scope: "channel_user",
+        maxMessages: 10,
+        ttlHours: 24,
+        includeBotReplies: true,
+      }),
+    ),
     repair: store.getJson("repair", {
       requireConfirmation: true,
       allowDestructive: false,
