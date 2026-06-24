@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import fs from "node:fs/promises";
 import type { Logger } from "pino";
-import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings } from "../domain/settings.js";
+import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings, timeoutSettingsSchema } from "../domain/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ConversationStore } from "../storage/conversation.js";
@@ -38,7 +38,7 @@ export async function createWebServer(
     const settings = readRuntimeSettings(store);
     const piAuthSnapshot = await piAuth.refreshExpiredCredential();
     const sessions = conversations.listSessions(settings.memory.ttlHours);
-    const statuses = await collectStatuses(store, settings, piAuthSnapshot.configured, sessions.length);
+    const statuses = await collectStatuses(store, logger, settings, piAuthSnapshot.configured, sessions.length);
 
     reply.type("text/html").send(settingsPage({ settings, piAuth: piAuthSnapshot, statuses, sessions }));
   });
@@ -81,6 +81,13 @@ export async function createWebServer(
         includeBotReplies: body.memoryIncludeBotReplies === "true",
       }),
     );
+    store.setJson(
+      "timeouts",
+      timeoutSettingsSchema.parse({
+        standardSeconds: body.timeoutStandardSeconds,
+        releaseLookupSeconds: body.timeoutReleaseLookupSeconds,
+      }),
+    );
     store.setJson("repair", {
       requireConfirmation: body.repairRequireConfirmation === "true",
       allowDestructive: body.repairAllowDestructive === "true",
@@ -105,7 +112,7 @@ export async function createWebServer(
   });
 
   app.post("/status/table", async (_request, reply) => {
-    reply.type("text/html").send(await renderStatusTable(store, conversations, piAuth));
+    reply.type("text/html").send(await renderStatusTable(store, conversations, piAuth, logger));
   });
 
   app.get("/pi-auth", async (_request, reply) => {
@@ -147,7 +154,7 @@ export async function createWebServer(
   });
 
   app.get("/health", async (_request, reply) => {
-    const clients = createMediaClients(store);
+    const clients = createMediaClients(store, logger);
     const results: Record<string, unknown> = {};
 
     for (const [name, check] of Object.entries({
@@ -170,20 +177,21 @@ export async function createWebServer(
   return app;
 }
 
-async function renderStatusTable(store: SettingsStore, conversations: ConversationStore, piAuth: PiAuthService): Promise<string> {
+async function renderStatusTable(store: SettingsStore, conversations: ConversationStore, piAuth: PiAuthService, logger: Logger): Promise<string> {
   const settings = readRuntimeSettings(store);
   const piAuthSnapshot = await piAuth.refreshExpiredCredential();
   const sessions = conversations.listSessions(settings.memory.ttlHours);
-  return statusTable(await collectStatuses(store, settings, piAuthSnapshot.configured, sessions.length));
+  return statusTable(await collectStatuses(store, logger, settings, piAuthSnapshot.configured, sessions.length));
 }
 
 async function collectStatuses(
   store: SettingsStore,
+  logger: Logger,
   settings = readRuntimeSettings(store),
   piAuthConfigured = false,
   activeMemorySessions = 0,
 ): Promise<ServiceStatus[]> {
-  const clients = createMediaClients(store);
+  const clients = createMediaClients(store, logger);
   const statuses: ServiceStatus[] = [
     {
       name: "Discord",

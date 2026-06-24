@@ -1,6 +1,13 @@
+import type { Logger } from "pino";
+
 export type ArrConnectionSettings = {
   url?: string;
   apiKey?: string;
+};
+
+export type ArrTimeoutSettings = {
+  standardSeconds: number;
+  releaseLookupSeconds: number;
 };
 
 export type ArrSystemStatus = {
@@ -18,6 +25,8 @@ export class ArrClient {
   constructor(
     private readonly name: "sonarr" | "radarr",
     private readonly settings: ArrConnectionSettings,
+    private readonly timeouts: ArrTimeoutSettings = { standardSeconds: 60, releaseLookupSeconds: 300 },
+    private readonly logger?: Logger,
   ) {}
 
   isConfigured(): boolean {
@@ -76,12 +85,12 @@ export class ArrClient {
 
   async getMovieReleases(movieId: number): Promise<unknown> {
     this.assertService("radarr");
-    return this.request<unknown>(`/api/v3/release?movieId=${movieId}`);
+    return this.request<unknown>(`/api/v3/release?movieId=${movieId}`, { timeoutSeconds: this.timeouts.releaseLookupSeconds });
   }
 
   async getEpisodeReleases(episodeId: number): Promise<unknown> {
     this.assertService("sonarr");
-    return this.request<unknown>(`/api/v3/release?episodeId=${episodeId}`);
+    return this.request<unknown>(`/api/v3/release?episodeId=${episodeId}`, { timeoutSeconds: this.timeouts.releaseLookupSeconds });
   }
 
   async triggerMovieSearch(movieId: number): Promise<unknown> {
@@ -149,26 +158,104 @@ export class ArrClient {
     );
   }
 
-  private async request<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  private async request<T>(path: string, options: { method?: string; body?: unknown; timeoutSeconds?: number } = {}): Promise<T> {
     if (!this.settings.url || !this.settings.apiKey) {
       throw new Error(`${this.name} is not configured`);
     }
 
     const url = new URL(path, ensureTrailingSlash(this.settings.url));
-    const response = await fetch(url, {
-      method: options.method ?? "GET",
-      headers: {
-        "X-Api-Key": this.settings.apiKey,
-        Accept: "application/json",
-        ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+    const timeoutSeconds = options.timeoutSeconds ?? this.timeouts.standardSeconds;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+    const startedAt = Date.now();
+    let response: Response;
+
+    this.logger?.info(
+      {
+        service: this.name,
+        method: options.method ?? "GET",
+        path,
+        timeoutSeconds,
       },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
+      "Media service request started",
+    );
+
+    try {
+      response = await fetch(url, {
+        method: options.method ?? "GET",
+        headers: {
+          "X-Api-Key": this.settings.apiKey,
+          Accept: "application/json",
+          ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      if (controller.signal.aborted) {
+        this.logger?.warn(
+          {
+            service: this.name,
+            method: options.method ?? "GET",
+            path,
+            timeoutSeconds,
+            elapsedMs,
+          },
+          "Media service request timed out",
+        );
+        throw new Error(`${this.name} request timed out after ${timeoutSeconds} seconds: ${path}`);
+      }
+
+      this.logger?.warn(
+        {
+          service: this.name,
+          method: options.method ?? "GET",
+          path,
+          timeoutSeconds,
+          elapsedMs,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Media service request failed before response",
+      );
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const elapsedMs = Date.now() - startedAt;
 
     if (!response.ok) {
       const body = await response.text();
+      this.logger?.warn(
+        {
+          service: this.name,
+          method: options.method ?? "GET",
+          path,
+          timeoutSeconds,
+          elapsedMs,
+          status: response.status,
+          statusText: response.statusText,
+          server: response.headers.get("server") ?? undefined,
+          via: response.headers.get("via") ?? undefined,
+          bodyPreview: body.slice(0, 500) || undefined,
+        },
+        "Media service request returned non-OK response",
+      );
       throw new Error(`${this.name} request failed: ${response.status} ${response.statusText}${body ? `: ${body.slice(0, 500)}` : ""}`);
     }
+
+    this.logger?.info(
+      {
+        service: this.name,
+        method: options.method ?? "GET",
+        path,
+        timeoutSeconds,
+        elapsedMs,
+        status: response.status,
+      },
+      "Media service request completed",
+    );
 
     if (response.status === 204) {
       return undefined as T;

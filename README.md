@@ -118,6 +118,8 @@ http://plex:32400
 
 If they are running on the host or another machine, use the appropriate LAN address instead.
 
+Avoid Cloudflare, tunnels, or public reverse-proxy URLs for Sonarr/Radarr/Plex API access. Release lookups can run long enough for proxies to return `504 Gateway Timeout`; direct Docker or LAN URLs are more reliable.
+
 ## TrueNAS Custom App Compose
 
 In TrueNAS SCALE, create a Custom App and paste a compose file like this. Change the dataset path to match your system.

@@ -20,7 +20,7 @@ const secrets = SecretBox.open(config.secretsKeyPath);
 const settings = new SettingsStore(db, secrets);
 const conversations = new ConversationStore(db);
 const piAuth = new PiAuthService(config);
-const agent = new PiAgentService(config, settings);
+const agent = new PiAgentService(config, settings, logger);
 const discord = new DiscordBotService(settings, conversations, agent, logger);
 
 await discord.start();

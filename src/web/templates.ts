@@ -309,6 +309,7 @@ export function settingsPage(data: SettingsPageData): string {
       <div class="section-body stack">
         ${discordAccessGroup(settings)}
         ${messageBehaviorGroup(settings)}
+        ${requestTimeoutsGroup(settings)}
         ${repairPolicyGroup(settings)}
       </div>
     </details>
@@ -459,6 +460,19 @@ function messageBehaviorGroup(settings: RuntimeSettings): string {
     </div>
     <div class="form-grid">
       ${checkbox("discordReactionsEnabled", "Enable message reactions", settings.discord.reactionsEnabled)}
+    </div>
+  </section>`;
+}
+
+function requestTimeoutsGroup(settings: RuntimeSettings): string {
+  return `<section class="group">
+    <div class="group-head">
+      <h3>Request Timeouts</h3>
+      <p class="subtle">Release lookup timeout applies to Sonarr/Radarr indexer release searches, which can be much slower than normal API reads.</p>
+    </div>
+    <div class="form-grid">
+      ${input("Standard API Timeout Seconds", "timeoutStandardSeconds", String(settings.timeouts.standardSeconds), "number", "60", " min=\"5\" max=\"600\"")}
+      ${input("Release Lookup Timeout Seconds", "timeoutReleaseLookupSeconds", String(settings.timeouts.releaseLookupSeconds), "number", "300", " min=\"15\" max=\"900\"")}
     </div>
   </section>`;
 }

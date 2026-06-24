@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { Logger } from "pino";
 import {
   AuthStorage,
   createAgentSession,
@@ -29,6 +30,7 @@ export class PiAgentService {
   constructor(
     private readonly config: AppConfig,
     private readonly store: SettingsStore,
+    private readonly logger?: Logger,
   ) {}
 
   async runDiscordRequest(message: string, context: AgentRequestContext): Promise<string> {
@@ -93,7 +95,7 @@ export class PiAgentService {
   }
 
   private createTools(context: AgentRequestContext) {
-    const clients = () => createMediaClients(this.store);
+    const clients = () => createMediaClients(this.store, this.logger);
 
     return [
       defineTool({

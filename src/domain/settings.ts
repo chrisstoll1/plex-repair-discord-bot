@@ -36,11 +36,17 @@ export const memorySettingsSchema = z.object({
   includeBotReplies: z.boolean().default(true),
 });
 
+export const timeoutSettingsSchema = z.object({
+  standardSeconds: z.coerce.number().int().min(5).max(600).default(60),
+  releaseLookupSeconds: z.coerce.number().int().min(15).max(900).default(300),
+});
+
 export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
 export type ArrSettings = z.infer<typeof arrSettingsSchema>;
 export type PlexSettings = z.infer<typeof plexSettingsSchema>;
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 export type MemorySettings = z.infer<typeof memorySettingsSchema>;
+export type TimeoutSettings = z.infer<typeof timeoutSettingsSchema>;
 
 export type RuntimeSettings = {
   discord: DiscordSettings;
@@ -49,6 +55,7 @@ export type RuntimeSettings = {
   plex: PlexSettings;
   ai: AiSettings;
   memory: MemorySettings;
+  timeouts: TimeoutSettings;
   repair: {
     requireConfirmation: boolean;
     allowDestructive: boolean;
@@ -86,6 +93,12 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
         maxMessages: 10,
         ttlHours: 24,
         includeBotReplies: true,
+      }),
+    ),
+    timeouts: timeoutSettingsSchema.parse(
+      store.getJson("timeouts", {
+        standardSeconds: 60,
+        releaseLookupSeconds: 300,
       }),
     ),
     repair: store.getJson("repair", {
