@@ -127,8 +127,14 @@ export class DiscordBotService {
       }
     });
 
-    await client.login(settings.discord.token);
-    this.client = client;
+    try {
+      await client.login(settings.discord.token);
+      this.client = client;
+    } catch (error) {
+      this.logger.error({ err: error }, "Discord bot login failed; web portal will remain online so settings can be fixed");
+      await client.destroy();
+      this.client = undefined;
+    }
   }
 
   async restart(): Promise<void> {
