@@ -20,7 +20,8 @@ export async function createWebServer(
   });
 
   app.get("/", async (_request, reply) => {
-    reply.type("text/html").send(dashboard(readRuntimeSettings(store), piAuth.getSnapshot().configured));
+    const piAuthSnapshot = await piAuth.refreshExpiredCredential();
+    reply.type("text/html").send(dashboard(readRuntimeSettings(store), piAuthSnapshot.configured));
   });
 
   app.get("/settings", async (_request, reply) => {
@@ -60,7 +61,7 @@ export async function createWebServer(
   });
 
   app.get("/pi-auth", async (_request, reply) => {
-    reply.type("text/html").send(piAuthPage(piAuth.getSnapshot()));
+    reply.type("text/html").send(piAuthPage(await piAuth.refreshExpiredCredential()));
   });
 
   app.post("/pi-auth/start", async (_request, reply) => {
@@ -94,7 +95,7 @@ export async function createWebServer(
       }
     }
 
-    results.pi = piAuth.getSnapshot();
+    results.pi = await piAuth.refreshExpiredCredential();
 
     reply.type("text/html").send(layout("Health", `<section class="panel"><pre>${escapeHtml(JSON.stringify(results, null, 2))}</pre></section>`));
   });

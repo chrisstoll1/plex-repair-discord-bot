@@ -126,6 +126,11 @@ export function piAuthPage(snapshot: PiAuthSnapshot): string {
   const credentialDetail = snapshot.credential
     ? `${snapshot.credential.type}${snapshot.credential.expiresAt ? `, expires ${snapshot.credential.expiresAt}` : ""}${snapshot.credential.expired ? " (expired)" : ""}`
     : "No stored OpenAI Codex credential";
+  const refreshDetail = snapshot.refresh?.error
+    ? `<p><strong>Refresh error:</strong> ${escapeHtml(snapshot.refresh.error)}</p>`
+    : snapshot.refresh?.refreshedAt
+      ? `<p class="muted">OAuth token refreshed ${escapeHtml(snapshot.refresh.refreshedAt)}.</p>`
+      : "";
 
   return layout(
     "Pi Auth",
@@ -133,6 +138,7 @@ export function piAuthPage(snapshot: PiAuthSnapshot): string {
       <h2>OpenAI Codex</h2>
       <p><strong>Status:</strong> ${snapshot.configured ? "Configured" : "Not configured"}</p>
       <p class="muted">${escapeHtml(credentialDetail)}</p>
+      ${refreshDetail}
       <p class="muted">Stored at <code>${escapeHtml(snapshot.authPath)}</code></p>
       <form method="post" action="/pi-auth/start" class="inline">
         <button type="submit" ${pending ? "disabled" : ""}>${snapshot.configured ? "Reconnect" : "Start Login"}</button>
