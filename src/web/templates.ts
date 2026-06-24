@@ -1,3 +1,4 @@
+import type { PiAuthSnapshot } from "../agent/pi-auth.js";
 import type { RuntimeSettings } from "../domain/settings.js";
 
 export function layout(title: string, body: string): string {
@@ -17,8 +18,11 @@ export function layout(title: string, body: string): string {
     label { display: block; margin: 14px 0 6px; color: #b9c3d6; }
     input, select { width: 100%; box-sizing: border-box; padding: 11px 12px; border: 1px solid #3a4658; border-radius: 10px; background: #0f141d; color: #eef2ff; }
     button { margin-top: 18px; border: 0; border-radius: 10px; padding: 11px 16px; color: #061018; background: #8bd3ff; font-weight: 700; cursor: pointer; }
+    button.danger { background: #ff8b8b; }
     code, pre { background: #0b0f16; border-radius: 8px; }
     pre { padding: 14px; overflow: auto; }
+    form.inline { display: inline-block; margin-right: 10px; }
+    form.inline button { margin-top: 0; }
     .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
     .muted { color: #9aa7bb; }
   </style>
@@ -29,6 +33,7 @@ export function layout(title: string, body: string): string {
     <nav>
       <a href="/">Dashboard</a>
       <a href="/settings">Settings</a>
+      <a href="/pi-auth">Pi Auth</a>
       <a href="/health">Health</a>
     </nav>
     ${body}
@@ -50,6 +55,7 @@ export function dashboard(settings: RuntimeSettings, piAuthConfigured: boolean):
     <section class="panel">
       <h2>Usage</h2>
       <p>Mention the bot in Discord after configuration: <code>@Plex Repairman why is Dune missing?</code></p>
+      <p><a href="/pi-auth">Connect Pi/Codex auth</a></p>
       <p class="muted">This portal intentionally has no built-in authentication. Put it behind your reverse proxy access controls.</p>
     </section>`,
   );
@@ -107,9 +113,53 @@ export function settingsPage(settings: RuntimeSettings): string {
     </form>
     <section class="panel">
       <h2>Pi Codex Auth</h2>
-      <p>Pi auth is stored in <code>/config/pi/auth.json</code>. Use a one-time Pi login flow and persist that file into the config volume until the portal has a first-class OAuth flow.</p>
+      <p>Use <a href="/pi-auth">Pi Auth</a> to connect ChatGPT Plus/Pro through the OpenAI Codex device-code flow.</p>
     </section>`,
   );
+}
+
+export function piAuthPage(snapshot: PiAuthSnapshot): string {
+  const login = snapshot.activeLogin;
+  const pending = login?.status === "pending";
+  const credentialDetail = snapshot.credential
+    ? `${snapshot.credential.type}${snapshot.credential.expiresAt ? `, expires ${snapshot.credential.expiresAt}` : ""}${snapshot.credential.expired ? " (expired)" : ""}`
+    : "No stored OpenAI Codex credential";
+
+  return layout(
+    "Pi Auth",
+    `<section class="panel">
+      <h2>OpenAI Codex</h2>
+      <p><strong>Status:</strong> ${snapshot.configured ? "Configured" : "Not configured"}</p>
+      <p class="muted">${escapeHtml(credentialDetail)}</p>
+      <p class="muted">Stored at <code>${escapeHtml(snapshot.authPath)}</code></p>
+      <form method="post" action="/pi-auth/start" class="inline">
+        <button type="submit" ${pending ? "disabled" : ""}>${snapshot.configured ? "Reconnect" : "Start Login"}</button>
+      </form>
+      ${pending ? `<form method="post" action="/pi-auth/cancel" class="inline"><button type="submit" class="danger">Cancel Login</button></form>` : ""}
+      ${snapshot.configured ? `<form method="post" action="/pi-auth/logout" class="inline"><button type="submit" class="danger">Logout</button></form>` : ""}
+    </section>
+    ${login ? piAuthLoginPanel(login) : ""}
+    <section class="panel">
+      <h2>How It Works</h2>
+      <p>Start login, open the verification URL, enter the code, and leave this page open until the status completes.</p>
+      <p class="muted">This uses Pi's device-code OAuth flow, so no public callback URL is required behind your reverse proxy.</p>
+    </section>`,
+  );
+}
+
+function piAuthLoginPanel(login: NonNullable<PiAuthSnapshot["activeLogin"]>): string {
+  const deviceCode = login.deviceCode;
+
+  return `<section class="panel">
+    <h2>Current Login</h2>
+    <p><strong>Status:</strong> ${escapeHtml(login.status)}</p>
+    ${login.progress ? `<p>${escapeHtml(login.progress)}</p>` : ""}
+    ${login.error ? `<p><strong>Error:</strong> ${escapeHtml(login.error)}</p>` : ""}
+    ${deviceCode ? `<p>Open <a href="${escapeHtml(deviceCode.verificationUri)}" target="_blank" rel="noreferrer">${escapeHtml(deviceCode.verificationUri)}</a> and enter:</p>
+    <pre>${escapeHtml(deviceCode.userCode)}</pre>
+    ${deviceCode.expiresAt ? `<p class="muted">Expires ${escapeHtml(deviceCode.expiresAt)}</p>` : ""}` : ""}
+    ${login.status === "pending" ? `<p class="muted">Refresh this page in a few seconds after authorizing to see completion.</p>` : ""}
+  </section>`;
 }
 
 function statusCard(name: string, ok: boolean, detail: string): string {

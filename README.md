@@ -13,6 +13,7 @@ This repository is in early implementation. The current slice includes:
 - Sonarr/Radarr/Plex connection settings and health checks.
 - Discord mention handling.
 - Pi SDK agent wrapper with initial custom tools.
+- Portal-based OpenAI Codex device-code auth for Pi.
 - Dockerfile and GHCR build workflow.
 
 ## Development
@@ -24,6 +25,22 @@ npm run dev
 
 By default local config is stored in `./config`. In containers, use `/config` as a persistent volume.
 
+The Pi SDK requires Node `>=22.19.0`. If your local Node is older, use Docker Desktop.
+
+## Docker Desktop
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:3000`. The compose setup stores persistent app data in `./config`, mounted as `/config` in the container.
+
+To stop the app:
+
+```bash
+docker compose down
+```
+
 ## Portal
 
 Open `http://localhost:3000` and configure Discord, Sonarr, Radarr, Plex, and Pi settings.
@@ -32,4 +49,6 @@ The portal intentionally has no built-in authentication yet. Put it behind a rev
 
 ## Pi Codex Auth
 
-Pi credentials should be persisted under the configured Pi agent directory, defaulting to `/config/pi` in containers. Until a first-class portal OAuth flow is added, run a one-time Pi login flow and preserve `/config/pi/auth.json`.
+Open `http://localhost:3000/pi-auth` and start the OpenAI Codex login flow. The portal uses device-code auth, so no public OAuth callback URL is required.
+
+Pi credentials are persisted under the configured Pi agent directory, defaulting to `/config/pi/auth.json` in containers.

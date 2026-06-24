@@ -1,0 +1,15 @@
+services:
+  plex-repairman:
+    build: .
+    image: plex-repairman:dev
+    container_name: plex-repairman-dev
+    ports:
+      - "3000:3000"
+    environment:
+      CONFIG_DIR: /config
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 3000
+      LOG_LEVEL: info
+    volumes:
+      - ./config:/config
+    restart: unless-stopped

@@ -23,7 +23,7 @@ const discord = new DiscordBotService(settings, agent, logger);
 
 await discord.start();
 
-const web = await createWebServer(config, settings, discord, piAuth, logger);
+const web = await createWebServer(settings, discord, piAuth, logger);
 await web.listen({ host: config.httpHost, port: config.httpPort });
 
 logger.info({ host: config.httpHost, port: config.httpPort, configDir: config.configDir }, "Plex Repairman started");

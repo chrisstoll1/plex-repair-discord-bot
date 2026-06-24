@@ -1,8 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import Fastify from "fastify";
 import type { Logger } from "pino";
-import type { AppConfig } from "../config.js";
 import { aiSettingsSchema, readRuntimeSettings } from "../domain/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore } from "../storage/settings.js";
@@ -11,7 +8,6 @@ import type { PiAuthService } from "../agent/pi-auth.js";
 import { dashboard, escapeHtml, layout, piAuthPage, settingsPage } from "./templates.js";
 
 export async function createWebServer(
-  config: AppConfig,
   store: SettingsStore,
   discord: DiscordBotService,
   piAuth: PiAuthService,
