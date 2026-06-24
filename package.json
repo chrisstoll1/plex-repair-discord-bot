@@ -2,6 +2,7 @@
   "name": "plex-repairman",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Discord chatbot for Plex/Sonarr/Radarr repair workflows powered by Pi Coding Agent.",
   "scripts": {

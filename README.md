@@ -8,7 +8,7 @@ Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and R
 
 It is built for common home media-server workflows like missing movies, missing episodes, wrong anime audio language, replacement searches, and checking whether Plex/Sonarr/Radarr agree about what is available.
 
-**NOTE:** Currently only OpenAI Codex - OAuth is supported for AI models integration
+**NOTE:** **Currently only OpenAI Codex - OAuth is supported for AI models integration**
 ## Features
 
 - Discord mention-driven repair assistant.
