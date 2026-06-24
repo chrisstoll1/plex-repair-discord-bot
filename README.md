@@ -22,6 +22,7 @@ It is built for common home media-server workflows like missing movies, missing 
 - Repair policy controls for confirmation prompts and destructive actions.
 - Repair role restrictions for limiting who can run repair actions.
 - Configurable conversation memory for follow-up messages in channels, threads, and DMs.
+- Configurable status reactions and refreshed typing indicators while requests are running.
 - OpenAI Codex device-code auth through Pi Coding Agent.
 
 ## How It Works
@@ -169,7 +170,7 @@ Required setup:
 - Copy the application ID into Plex Repairman's settings page.
 - Enable the `Message Content Intent` for the bot.
 - Invite the bot to your server.
-- Give it permission to read messages and send messages in the channels where it should respond.
+- Give it permission to read messages, send messages, and add reactions in the channels where it should respond.
 
 By default, the bot responds when mentioned:
 

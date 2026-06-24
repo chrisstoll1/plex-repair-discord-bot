@@ -1,4 +1,5 @@
 import { Client, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } from "discord.js";
+import type { Message } from "discord.js";
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
@@ -58,7 +59,9 @@ export class DiscordBotService {
       }
 
       const content = message.content.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
+      const reactions = new MessageReactionTracker(message, latest.discord.reactionsEnabled, this.logger);
       if (!content) {
+        await reactions.set("❓");
         await message.reply(
           isDirectMessage
             ? "Tell me what media issue to check, e.g. `why is Dune missing?`"
@@ -67,7 +70,9 @@ export class DiscordBotService {
         return;
       }
 
-      await message.channel.sendTyping();
+      await reactions.set(selectInitialReaction(content));
+      const typing = startTypingRefresh(message, this.logger);
+      const progress = startReactionProgress(reactions, content);
 
       try {
         const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
@@ -108,10 +113,17 @@ export class DiscordBotService {
           }
         }
 
+        progress.stop();
         await message.reply(truncateDiscord(response));
+        await reactions.set("✅");
       } catch (error) {
+        progress.stop();
         this.logger.error({ err: error }, "Failed to process Discord message");
         await message.reply(`I hit an error while processing that request: ${error instanceof Error ? error.message : String(error)}`);
+        await reactions.set("❌");
+      } finally {
+        typing.stop();
+        progress.stop();
       }
     });
 
@@ -157,4 +169,100 @@ function isAllowed(value: string | null, allowed: Set<string>): boolean {
 function truncateDiscord(value: string): string {
   if (value.length <= 1900) return value;
   return `${value.slice(0, 1880)}\n...`;
+}
+
+class MessageReactionTracker {
+  private currentEmoji: string | undefined;
+  private chain = Promise.resolve();
+
+  constructor(
+    private readonly message: Message,
+    private readonly enabled: boolean,
+    private readonly logger: Logger,
+  ) {}
+
+  async set(emoji: string): Promise<void> {
+    if (!this.enabled) return;
+
+    this.chain = this.chain
+      .then(() => this.apply(emoji))
+      .catch((error) => {
+        this.logger.debug({ err: error, messageId: this.message.id, emoji }, "Failed to update Discord reaction");
+      });
+
+    await this.chain;
+  }
+
+  private async apply(emoji: string): Promise<void> {
+    if (this.currentEmoji === emoji) return;
+
+    if (this.currentEmoji) {
+      const existing = this.message.reactions.cache.get(this.currentEmoji);
+      const botUserId = this.message.client.user?.id;
+      if (botUserId) await existing?.users.remove(botUserId);
+    }
+
+    await this.message.react(emoji);
+    this.currentEmoji = emoji;
+  }
+}
+
+function startTypingRefresh(message: Message, logger: Logger): { stop: () => void } {
+  let stopped = false;
+
+  const send = async () => {
+    try {
+      if (!canSendTyping(message.channel)) return;
+      await message.channel.sendTyping();
+    } catch (error) {
+      logger.debug({ err: error, messageId: message.id }, "Failed to refresh Discord typing indicator");
+    }
+  };
+
+  void send();
+  const interval = setInterval(() => {
+    if (!stopped) void send();
+  }, 8_000);
+
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(interval);
+    },
+  };
+}
+
+function canSendTyping(channel: Message["channel"]): channel is Message["channel"] & { sendTyping: () => Promise<void> } {
+  return "sendTyping" in channel && typeof channel.sendTyping === "function";
+}
+
+function startReactionProgress(reactions: MessageReactionTracker, content: string): { stop: () => void } {
+  const emojis = uniqueEmojis([selectInitialReaction(content), "🤔", "🧐", "🔎", "🛠️"]);
+  let index = 0;
+
+  const interval = setInterval(() => {
+    index = (index + 1) % emojis.length;
+    void reactions.set(emojis[index] ?? "🤔");
+  }, 10_000);
+
+  return {
+    stop: () => clearInterval(interval),
+  };
+}
+
+function selectInitialReaction(content: string): string {
+  const normalized = content.toLowerCase();
+
+  if (/\b(fix|repair|replace|delete|remove|grab|download|upgrade|monitor)\b/.test(normalized)) return "🛠️";
+  if (/\b(audio|language|dub|subtitle|subtitles|subs|english|japanese|multi-language|multilanguage)\b/.test(normalized)) return "🔊";
+  if (/\b(search|find|missing|where|why|available|exists?)\b/.test(normalized)) return "🔎";
+  if (/\b(movie|film|radarr|theatrical)\b/.test(normalized)) return "🎬";
+  if (/\b(show|series|season|episode|anime|sonarr|specials?|s\d{1,2}e\d{1,2})\b/.test(normalized)) return "📺";
+  if (/\b(wrong|weird|broken|bad|issue|problem)\b/.test(normalized)) return "🧐";
+
+  return "👀";
+}
+
+function uniqueEmojis(emojis: string[]): string[] {
+  return [...new Set(emojis)];
 }

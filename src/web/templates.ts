@@ -78,6 +78,8 @@ export function settingsPage(settings: RuntimeSettings): string {
       <input name="discordRepairRoleIds" value="${escapeHtml(settings.discord.repairRoleIds)}">
       <label><input name="discordAllowDirectMessages" type="checkbox" value="true" ${settings.discord.allowDirectMessages ? "checked" : ""} style="width:auto"> Allow Direct Messages</label>
       <p class="muted">When enabled, DM messages are treated as bot requests without requiring an @ mention.</p>
+      <label><input name="discordReactionsEnabled" type="checkbox" value="true" ${settings.discord.reactionsEnabled ? "checked" : ""} style="width:auto"> Enable message reactions</label>
+      <p class="muted">When enabled, the bot reacts to requests with one relevant status emoji at a time.</p>
 
       <h2>Sonarr</h2>
       <label>URL</label>
