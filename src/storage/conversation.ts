@@ -18,6 +18,24 @@ type ConversationMessageRow = {
   created_at: string;
 };
 
+export type ConversationSession = {
+  conversationKey: string;
+  messageCount: number;
+  firstMessageAt: string;
+  lastMessageAt: string;
+  latestRole: ConversationRole;
+  latestContent: string;
+};
+
+type ConversationSessionRow = {
+  conversation_key: string;
+  message_count: number;
+  first_message_at: string;
+  last_message_at: string;
+  latest_role: ConversationRole;
+  latest_content: string;
+};
+
 export class ConversationStore {
   constructor(private readonly db: AppDatabase) {}
 
@@ -73,5 +91,46 @@ export class ConversationStore {
   prune(ttlHours: number): void {
     const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
     this.db.prepare("DELETE FROM conversation_messages WHERE created_at < ?").run(cutoff);
+  }
+
+  listSessions(ttlHours: number): ConversationSession[] {
+    const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT
+           session.conversation_key,
+           session.message_count,
+           session.first_message_at,
+           session.last_message_at,
+           latest.role AS latest_role,
+           latest.content AS latest_content
+         FROM (
+           SELECT
+             conversation_key,
+             COUNT(*) AS message_count,
+             MIN(created_at) AS first_message_at,
+             MAX(created_at) AS last_message_at,
+             MAX(id) AS latest_id
+           FROM conversation_messages
+           WHERE created_at >= ?
+           GROUP BY conversation_key
+         ) session
+         JOIN conversation_messages latest ON latest.id = session.latest_id
+         ORDER BY session.last_message_at DESC`,
+      )
+      .all(cutoff) as ConversationSessionRow[];
+
+    return rows.map((row) => ({
+      conversationKey: row.conversation_key,
+      messageCount: row.message_count,
+      firstMessageAt: row.first_message_at,
+      lastMessageAt: row.last_message_at,
+      latestRole: row.latest_role,
+      latestContent: row.latest_content,
+    }));
+  }
+
+  deleteSession(conversationKey: string): void {
+    this.db.prepare("DELETE FROM conversation_messages WHERE conversation_key = ?").run(conversationKey);
   }
 }

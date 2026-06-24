@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/web/assets/repairman.png" alt="Plex Repairman" width="120">
+</p>
+
 # Plex Repairman
 
 Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media apps, explain what it found, and run approved repair actions.

@@ -6,6 +6,7 @@ RUN npm install
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
+RUN mkdir -p dist/web/assets && cp src/web/assets/* dist/web/assets/
 
 FROM node:24-bookworm-slim AS runtime
 

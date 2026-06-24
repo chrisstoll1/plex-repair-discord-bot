@@ -156,12 +156,34 @@ export class PiAuthService {
         activeLogin.completedAt = new Date().toISOString();
         activeLogin.progress = "OpenAI Codex auth is configured.";
         this.authStorage.reload();
+        if (this.activeLogin === activeLogin) {
+          this.activeLogin = undefined;
+        }
       })
       .catch((error) => {
         activeLogin.completedAt = new Date().toISOString();
         activeLogin.status = activeLogin.abort.signal.aborted ? "cancelled" : "error";
         activeLogin.error = error instanceof Error ? error.message : String(error);
+        if (activeLogin.abort.signal.aborted && this.activeLogin === activeLogin) {
+          this.activeLogin = undefined;
+        }
       });
+
+    return this.getSnapshot();
+  }
+
+  async startLoginAndWaitForDeviceCode(timeoutMs = 5000): Promise<PiAuthSnapshot> {
+    this.startLogin();
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const snapshot = this.getSnapshot();
+      if (snapshot.activeLogin?.deviceCode || snapshot.activeLogin?.status !== "pending") {
+        return snapshot;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
 
     return this.getSnapshot();
   }
@@ -169,9 +191,9 @@ export class PiAuthService {
   cancelLogin(): PiAuthSnapshot {
     if (this.activeLogin?.status === "pending") {
       this.activeLogin.abort.abort();
-      this.activeLogin.status = "cancelled";
-      this.activeLogin.completedAt = new Date().toISOString();
     }
+
+    this.activeLogin = undefined;
 
     return this.getSnapshot();
   }
@@ -180,6 +202,7 @@ export class PiAuthService {
     this.cancelLogin();
     this.authStorage.logout(OPENAI_CODEX_PROVIDER);
     this.authStorage.reload();
+    this.activeLogin = undefined;
     return this.getSnapshot();
   }
 }
