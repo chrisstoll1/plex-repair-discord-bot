@@ -35,6 +35,7 @@ export async function createWebServer(
     setIfPresent(store, "discord.allowedGuildIds", body.discordAllowedGuildIds, false, true);
     setIfPresent(store, "discord.allowedChannelIds", body.discordAllowedChannelIds, false, true);
     setIfPresent(store, "discord.repairRoleIds", body.discordRepairRoleIds, false, true);
+    store.setString("discord.allowDirectMessages", String(body.discordAllowDirectMessages === "true"));
 
     setIfPresent(store, "sonarr.url", body.sonarrUrl, false, true);
     setIfPresent(store, "sonarr.apiKey", body.sonarrApiKey, true);

@@ -47,6 +47,8 @@ Open `http://localhost:3000` and configure Discord, Sonarr, Radarr, Plex, and Pi
 
 The portal intentionally has no built-in authentication yet. Put it behind a reverse proxy with access controls.
 
+Discord DMs are disabled by default. Enable `Allow Direct Messages` in settings if you want private messages to be handled as bot requests without requiring an `@` mention.
+
 ## Pi Codex Auth
 
 Open `http://localhost:3000/pi-auth` and start the OpenAI Codex login flow. The portal uses device-code auth, so no public OAuth callback URL is required.

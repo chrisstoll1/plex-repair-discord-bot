@@ -21,7 +21,7 @@ export class DiscordBotService {
     }
 
     const client = new Client({
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
       partials: [Partials.Channel],
     });
 
@@ -40,15 +40,28 @@ export class DiscordBotService {
     client.on(Events.MessageCreate, async (message) => {
       if (message.author.bot) return;
       if (!client.user) return;
-      if (!message.mentions.has(client.user)) return;
 
       const latest = readRuntimeSettings(this.store);
-      if (!isAllowed(message.guildId, csvToSet(latest.discord.allowedGuildIds))) return;
-      if (!isAllowed(message.channelId, csvToSet(latest.discord.allowedChannelIds))) return;
+      const isDirectMessage = message.guildId === null;
+
+      if (isDirectMessage) {
+        if (!latest.discord.allowDirectMessages) {
+          this.logger.debug({ userId: message.author.id }, "Ignoring Discord DM because direct messages are disabled");
+          return;
+        }
+      } else {
+        if (!message.mentions.has(client.user)) return;
+        if (!isAllowed(message.guildId, csvToSet(latest.discord.allowedGuildIds))) return;
+        if (!isAllowed(message.channelId, csvToSet(latest.discord.allowedChannelIds))) return;
+      }
 
       const content = message.content.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
       if (!content) {
-        await message.reply("Tell me what media issue to check, e.g. `@Plex Repairman why is Dune missing?`");
+        await message.reply(
+          isDirectMessage
+            ? "Tell me what media issue to check, e.g. `why is Dune missing?`"
+            : "Tell me what media issue to check, e.g. `@Plex Repairman why is Dune missing?`",
+        );
         return;
       }
 
@@ -65,7 +78,7 @@ export class DiscordBotService {
 
         await message.reply(truncateDiscord(response));
       } catch (error) {
-        this.logger.error({ err: error }, "Failed to process Discord mention");
+        this.logger.error({ err: error }, "Failed to process Discord message");
         await message.reply(`I hit an error while processing that request: ${error instanceof Error ? error.message : String(error)}`);
       }
     });

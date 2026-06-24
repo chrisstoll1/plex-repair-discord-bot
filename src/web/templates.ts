@@ -76,6 +76,8 @@ export function settingsPage(settings: RuntimeSettings): string {
       <input name="discordAllowedChannelIds" value="${escapeHtml(settings.discord.allowedChannelIds)}">
       <label>Repair Role IDs (comma separated)</label>
       <input name="discordRepairRoleIds" value="${escapeHtml(settings.discord.repairRoleIds)}">
+      <label><input name="discordAllowDirectMessages" type="checkbox" value="true" ${settings.discord.allowDirectMessages ? "checked" : ""} style="width:auto"> Allow Direct Messages</label>
+      <p class="muted">When enabled, DM messages are treated as bot requests without requiring an @ mention.</p>
 
       <h2>Sonarr</h2>
       <label>URL</label>

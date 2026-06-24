@@ -7,6 +7,7 @@ export const discordSettingsSchema = z.object({
   allowedGuildIds: z.string().default(""),
   allowedChannelIds: z.string().default(""),
   repairRoleIds: z.string().default(""),
+  allowDirectMessages: z.boolean().default(false),
 });
 
 export const arrSettingsSchema = z.object({
@@ -51,6 +52,7 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
       allowedGuildIds: store.getString("discord.allowedGuildIds") ?? "",
       allowedChannelIds: store.getString("discord.allowedChannelIds") ?? "",
       repairRoleIds: store.getString("discord.repairRoleIds") ?? "",
+      allowDirectMessages: store.getString("discord.allowDirectMessages") === "true",
     },
     sonarr: {
       url: store.getString("sonarr.url") ?? "",
