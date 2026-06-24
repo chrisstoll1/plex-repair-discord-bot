@@ -128,6 +128,7 @@ In TrueNAS SCALE, create a Custom App and paste a compose file like this. Change
 services:
   plex-repairman:
     image: ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
+    pull_policy: always
     container_name: plex-repairman
     restart: unless-stopped
     ports:
