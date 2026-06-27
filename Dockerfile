@@ -17,7 +17,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm install --omit=dev
@@ -25,4 +25,5 @@ COPY --from=build /app/dist ./dist
 
 VOLUME ["/config"]
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 CMD curl --fail --silent --output /dev/null "http://127.0.0.1:${HTTP_PORT:-3000}/health" || exit 1
 CMD ["node", "dist/main.js"]

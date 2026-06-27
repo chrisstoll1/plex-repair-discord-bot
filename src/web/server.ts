@@ -34,6 +34,8 @@ export async function createWebServer(
     reply.type("image/png").send(await fs.readFile(new URL("./assets/repairman.png", import.meta.url)));
   });
 
+  app.get("/health", async () => ({ ok: true }));
+
   app.get("/", async (_request, reply) => {
     const settings = readRuntimeSettings(store);
     const piAuthSnapshot = await piAuth.refreshExpiredCredential();
@@ -153,7 +155,7 @@ export async function createWebServer(
     reply.type("text/html").send(piAuthPanel(await piAuth.refreshExpiredCredential()));
   });
 
-  app.get("/health", async (_request, reply) => {
+  app.get("/health/services", async (_request, reply) => {
     const clients = createMediaClients(store, logger);
     const results: Record<string, unknown> = {};
 

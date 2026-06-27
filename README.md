@@ -75,7 +75,7 @@ Open the portal at:
 http://localhost:3000
 ```
 
-The `/config` volume is required. It stores app settings, encrypted secrets, and Pi/OpenAI auth data.
+The `/config` volume is required. It stores app settings, encrypted secrets, and Pi/OpenAI auth data. Back up the entire directory as a unit; the SQLite database and `secrets.key` belong together because stored API tokens are encrypted.
 
 ## Docker Compose
 
@@ -146,8 +146,11 @@ Recommended TrueNAS notes:
 
 - Create the config dataset before starting the app.
 - Replace `/mnt/tank/apps/plex-repairman/config` with your actual dataset path.
+- Back up the full config dataset, not just the database file.
 - Put the portal behind your normal reverse proxy or private network access controls.
 - Configure Sonarr, Radarr, and Plex URLs using addresses reachable from the app container.
+
+This compose example is for TrueNAS Custom App installs. Official TrueNAS catalog submission uses the Docker Compose-based catalog at `https://github.com/truenas/apps` and wraps the same image, `/config` storage, port `3000`, and environment variables in catalog metadata and templates.
 
 ## First-Time Setup
 
@@ -164,7 +167,7 @@ Recommended TrueNAS notes:
 11. Choose conversation memory settings.
 12. Save settings.
 13. Go to `Pi Auth` and connect OpenAI Codex auth with the device-code flow.
-14. Check `Health` to confirm all services are reachable.
+14. Check the `Status` panel to confirm all services are reachable.
 
 The portal intentionally has no built-in authentication. Run it only on a trusted network or put it behind a reverse proxy with access controls.
 
@@ -318,13 +321,19 @@ OAuth access tokens expire, but the SDK refreshes them automatically when possib
 
 ## Health Checks
 
-Open:
+The lightweight container health endpoint is:
 
 ```text
 http://<host>:3000/health
 ```
 
-The health page checks connectivity to Sonarr, Radarr, Plex, and Pi auth status.
+It returns `200` when the web process is alive. It does not require Discord, Sonarr, Radarr, Plex, or Pi auth to be configured, so container orchestrators do not restart the app during first-time setup.
+
+For a detailed service connectivity page, open:
+
+```text
+http://<host>:3000/health/services
+```
 
 ## Published Images
 
@@ -334,10 +343,11 @@ Available tags:
 
 ```text
 ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
+ghcr.io/chrisstoll1/plex-repair-discord-bot:<package-version>
 ghcr.io/chrisstoll1/plex-repair-discord-bot:sha-<commit-sha>
 ```
 
-Use `latest` for normal deployments. Use `sha-<commit-sha>` when you want to pin, test, or roll back to a specific build.
+Use `latest` for normal deployments. Use `<package-version>` when you want a stable release tag. Use `sha-<commit-sha>` when you want to pin, test, or roll back to a specific build.
 
 Images include OCI labels that link back to the source repository and exact commit:
 
