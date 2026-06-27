@@ -29,7 +29,7 @@ export function layout(title: string, body: string): string {
     body { margin: 0; background: #0a0d12; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px 18px 56px; }
     header { display: flex; justify-content: space-between; gap: 18px; align-items: end; margin-bottom: 22px; border-bottom: 1px solid #2c3442; padding-bottom: 16px; }
-    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; }
     .brand-logo { width: 52px; height: 52px; object-fit: contain; }
     h1, h2, h3 { margin: 0; line-height: 1.15; }
     h1 { font-size: clamp(1.7rem, 4vw, 2.6rem); letter-spacing: -.04em; }
@@ -113,10 +113,10 @@ export function layout(title: string, body: string): string {
   <main>
     <header>
       <div>
-        <div class="brand">
+        <a class="brand" href="https://github.com/chrisstoll1/plex-repair-discord-bot" target="_blank" rel="noreferrer">
           <img class="brand-logo" src="/repairman.png" alt="" width="52" height="52">
           <h1>Plex Repairman</h1>
-        </div>
+        </a>
       </div>
       <nav class="anchors">
         <a href="#status">Status</a>
