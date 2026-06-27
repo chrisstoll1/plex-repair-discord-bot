@@ -21,6 +21,10 @@ export type ReleaseGrabParams = {
   indexerId: number;
 };
 
+export type RenameFilesParams = {
+  fileIds: number[];
+};
+
 export class ArrClient {
   constructor(
     private readonly name: "sonarr" | "radarr",
@@ -35,6 +39,10 @@ export class ArrClient {
 
   async getSystemStatus(): Promise<ArrSystemStatus> {
     return this.request<ArrSystemStatus>("/api/v3/system/status");
+  }
+
+  async getRootFolders(): Promise<unknown> {
+    return this.request<unknown>("/api/v3/rootfolder");
   }
 
   async search(query: string): Promise<unknown> {
@@ -56,6 +64,17 @@ export class ArrClient {
     this.assertService("sonarr");
     const seasonQuery = seasonNumber === undefined ? "" : `&seasonNumber=${seasonNumber}`;
     return this.request<unknown>(`/api/v3/episode?seriesId=${seriesId}${seasonQuery}`);
+  }
+
+  async getEpisodeRenamePreviews(seriesId: number, seasonNumber?: number): Promise<unknown> {
+    this.assertService("sonarr");
+    const seasonQuery = seasonNumber === undefined ? "" : `&seasonNumber=${seasonNumber}`;
+    return this.request<unknown>(`/api/v3/rename?seriesId=${seriesId}${seasonQuery}`);
+  }
+
+  async getMovieRenamePreviews(movieId: number): Promise<unknown> {
+    this.assertService("radarr");
+    return this.request<unknown>(`/api/v3/rename?movieId=${movieId}`);
   }
 
   async getEpisodeFile(episodeFileId: number): Promise<unknown> {
@@ -132,14 +151,31 @@ export class ArrClient {
     });
   }
 
+  async renameFiles(params: RenameFilesParams): Promise<unknown> {
+    return this.request<unknown>("/api/v3/command", {
+      method: "POST",
+      body: { name: "RenameFiles", files: params.fileIds },
+    });
+  }
+
   async updateMovie(movie: unknown): Promise<unknown> {
     this.assertService("radarr");
     return this.request<unknown>("/api/v3/movie", { method: "PUT", body: movie });
   }
 
+  async updateMovieById(movieId: number, movie: unknown, moveFiles: boolean): Promise<unknown> {
+    this.assertService("radarr");
+    return this.request<unknown>(`/api/v3/movie/${movieId}?moveFiles=${moveFiles}`, { method: "PUT", body: movie });
+  }
+
   async updateSeries(series: unknown): Promise<unknown> {
     this.assertService("sonarr");
     return this.request<unknown>("/api/v3/series", { method: "PUT", body: series });
+  }
+
+  async updateSeriesById(seriesId: number, series: unknown, moveFiles: boolean): Promise<unknown> {
+    this.assertService("sonarr");
+    return this.request<unknown>(`/api/v3/series/${seriesId}?moveFiles=${moveFiles}`, { method: "PUT", body: series });
   }
 
   async removeMovie(movieId: number, deleteFiles: boolean, addImportExclusion: boolean): Promise<unknown> {

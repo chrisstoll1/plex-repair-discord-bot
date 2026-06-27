@@ -26,6 +26,31 @@ export type AgentRequestContext = {
   recentMessages?: ConversationMessage[];
 };
 
+type RadarrMovieSettingsParams = {
+  movieId: number;
+  monitored?: boolean;
+  qualityProfileId?: number;
+  minimumAvailability?: string;
+  rootFolderPath?: string;
+  path?: string;
+  moveFiles?: boolean;
+  confirmed?: boolean;
+};
+
+type SonarrSeriesSettingsParams = {
+  seriesId: number;
+  monitored?: boolean;
+  seriesType?: "standard" | "daily" | "anime";
+  qualityProfileId?: number;
+  languageProfileId?: number;
+  metadataProfileId?: number;
+  seasonFolder?: boolean;
+  rootFolderPath?: string;
+  path?: string;
+  moveFiles?: boolean;
+  confirmed?: boolean;
+};
+
 export class PiAgentService {
   constructor(
     private readonly config: AppConfig,
@@ -143,12 +168,52 @@ export class PiAgentService {
         },
       }),
       defineTool({
+        name: "get_radarr_movie",
+        label: "Get Radarr movie",
+        description: "Inspect an existing Radarr movie by ID, including monitored state, path, root folder, profile IDs, availability, and movie file metadata when Radarr provides it. Use before changing movie settings, moving location, renaming files, or triggering a search for an existing movie.",
+        parameters: Type.Object({ movieId: Type.Number({ description: "Radarr movie ID" }) }),
+        execute: async (_toolCallId, params: { movieId: number }) => {
+          const results = await clients().radarr.getMovie(params.movieId);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_sonarr_series",
+        label: "Get Sonarr series",
+        description: "Inspect an existing Sonarr series by ID, including monitored state, path, root folder, seriesType, season folders, profile IDs, and seasons. Use before changing series settings, moving location, renaming files, or triggering a search for an existing series.",
+        parameters: Type.Object({ seriesId: Type.Number({ description: "Sonarr series ID" }) }),
+        execute: async (_toolCallId, params: { seriesId: number }) => {
+          const results = await clients().sonarr.getSeries(params.seriesId);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
         name: "list_plex_libraries",
         label: "List Plex libraries",
         description: "List Plex library sections and their IDs. Use this before refreshing a Plex library section.",
         parameters: Type.Object({}),
         execute: async () => {
           const results = await clients().plex.getLibrarySections();
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "list_radarr_root_folders",
+        label: "List Radarr root folders",
+        description: "List Radarr root folders and paths. Use before moving a movie or changing a movie's root folder/path.",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const results = await clients().radarr.getRootFolders();
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "list_sonarr_root_folders",
+        label: "List Sonarr root folders",
+        description: "List Sonarr root folders and paths. Use before moving a series or changing a series root folder/path.",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const results = await clients().sonarr.getRootFolders();
           return toolResponse(results);
         },
       }),
@@ -182,6 +247,29 @@ export class PiAgentService {
         parameters: Type.Object({ episodeFileId: Type.Number({ description: "Sonarr episode file ID" }) }),
         execute: async (_toolCallId, params: { episodeFileId: number }) => {
           const results = await clients().sonarr.getEpisodeFile(params.episodeFileId);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "preview_sonarr_rename",
+        label: "Preview Sonarr rename",
+        description: "Preview Sonarr episode file rename/reorganize changes for a series, optionally limited to a season. Use before running rename_sonarr_episode_files.",
+        parameters: Type.Object({
+          seriesId: Type.Number({ description: "Sonarr series ID" }),
+          seasonNumber: Type.Optional(Type.Number({ description: "Optional season number, use 0 for specials" })),
+        }),
+        execute: async (_toolCallId, params: { seriesId: number; seasonNumber?: number }) => {
+          const results = await clients().sonarr.getEpisodeRenamePreviews(params.seriesId, params.seasonNumber);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "preview_radarr_rename",
+        label: "Preview Radarr rename",
+        description: "Preview Radarr movie file rename/reorganize changes for a movie. Use before running rename_radarr_movie_files.",
+        parameters: Type.Object({ movieId: Type.Number({ description: "Radarr movie ID" }) }),
+        execute: async (_toolCallId, params: { movieId: number }) => {
+          const results = await clients().radarr.getMovieRenamePreviews(params.movieId);
           return toolResponse(results);
         },
       }),
@@ -352,6 +440,112 @@ export class PiAgentService {
         },
       }),
       defineTool({
+        name: "rename_radarr_movie_files",
+        label: "Rename Radarr movie files",
+        description: "Run Radarr rename/reorganize for selected movie file IDs returned by preview_radarr_rename. Requires confirmation when configured.",
+        parameters: Type.Object({
+          movieFileIds: Type.Array(Type.Number(), { description: "Radarr movie file IDs to rename/reorganize" }),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: { movieFileIds: number[]; confirmed?: boolean }) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Rename/reorganize Radarr movie file IDs ${params.movieFileIds.join(", ")}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().radarr.renameFiles({ fileIds: params.movieFileIds });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "rename_sonarr_episode_files",
+        label: "Rename Sonarr episode files",
+        description: "Run Sonarr rename/reorganize for selected episode file IDs returned by preview_sonarr_rename. Requires confirmation when configured.",
+        parameters: Type.Object({
+          episodeFileIds: Type.Array(Type.Number(), { description: "Sonarr episode file IDs to rename/reorganize" }),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: { episodeFileIds: number[]; confirmed?: boolean }) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Rename/reorganize Sonarr episode file IDs ${params.episodeFileIds.join(", ")}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().sonarr.renameFiles({ fileIds: params.episodeFileIds });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "update_radarr_movie_settings",
+        label: "Update Radarr movie settings",
+        description: "Update selected settings for an existing Radarr movie. Use get_radarr_movie first; use list_radarr_root_folders before changing rootFolderPath/path. Can move files when moveFiles=true. Requires confirmation when configured.",
+        parameters: Type.Object({
+          movieId: Type.Number({ description: "Radarr movie ID" }),
+          monitored: Type.Optional(Type.Boolean({ description: "Desired monitored value" })),
+          qualityProfileId: Type.Optional(Type.Number({ description: "Radarr quality profile ID" })),
+          minimumAvailability: Type.Optional(Type.String({ description: "Radarr minimum availability value, such as announced, inCinemas, released, or preDB" })),
+          rootFolderPath: Type.Optional(Type.String({ description: "Target Radarr root folder path" })),
+          path: Type.Optional(Type.String({ description: "Full target movie path" })),
+          moveFiles: Type.Optional(Type.Boolean({ description: "Whether Radarr should move files to the new path/root folder" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: RadarrMovieSettingsParams) => {
+          const requested = pickDefined(params, ["monitored", "qualityProfileId", "minimumAvailability", "rootFolderPath", "path"]);
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Update Radarr movie ID ${params.movieId} settings ${JSON.stringify(requested)} with moveFiles=${params.moveFiles ?? false}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const radarr = clients().radarr;
+          const movie = withProperties(await radarr.getMovie(params.movieId), requested);
+          const results = await radarr.updateMovieById(params.movieId, movie, params.moveFiles ?? false);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "update_sonarr_series_settings",
+        label: "Update Sonarr series settings",
+        description: "Update selected settings for an existing Sonarr series, including seriesType for standard/anime/daily numbering behavior. Use get_sonarr_series first; use list_sonarr_root_folders before changing rootFolderPath/path. Can move files when moveFiles=true. Requires confirmation when configured.",
+        parameters: Type.Object({
+          seriesId: Type.Number({ description: "Sonarr series ID" }),
+          monitored: Type.Optional(Type.Boolean({ description: "Desired monitored value" })),
+          seriesType: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("daily"), Type.Literal("anime")], { description: "Sonarr series type; anime enables anime/absolute-numbering behavior" })),
+          qualityProfileId: Type.Optional(Type.Number({ description: "Sonarr quality profile ID" })),
+          languageProfileId: Type.Optional(Type.Number({ description: "Sonarr language profile ID, if used by this Sonarr version" })),
+          metadataProfileId: Type.Optional(Type.Number({ description: "Sonarr metadata profile ID, if used by this Sonarr version" })),
+          seasonFolder: Type.Optional(Type.Boolean({ description: "Whether Sonarr should use season folders" })),
+          rootFolderPath: Type.Optional(Type.String({ description: "Target Sonarr root folder path" })),
+          path: Type.Optional(Type.String({ description: "Full target series path" })),
+          moveFiles: Type.Optional(Type.Boolean({ description: "Whether Sonarr should move files to the new path/root folder" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: SonarrSeriesSettingsParams) => {
+          const requested = pickDefined(params, [
+            "monitored",
+            "seriesType",
+            "qualityProfileId",
+            "languageProfileId",
+            "metadataProfileId",
+            "seasonFolder",
+            "rootFolderPath",
+            "path",
+          ]);
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Update Sonarr series ID ${params.seriesId} settings ${JSON.stringify(requested)} with moveFiles=${params.moveFiles ?? false}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const sonarr = clients().sonarr;
+          const series = withProperties(await sonarr.getSeries(params.seriesId), requested);
+          const results = await sonarr.updateSeriesById(params.seriesId, series, params.moveFiles ?? false);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
         name: "set_radarr_movie_monitored",
         label: "Set Radarr movie monitored",
         description: "Set an existing Radarr movie's monitored flag. Requires confirmation when configured.",
@@ -369,7 +563,7 @@ export class PiAgentService {
 
           const radarr = clients().radarr;
           const movie = withProperty(await radarr.getMovie(params.movieId), "monitored", params.monitored);
-          const results = await radarr.updateMovie(movie);
+          const results = await radarr.updateMovieById(params.movieId, movie, false);
           return toolResponse(results);
         },
       }),
@@ -391,7 +585,7 @@ export class PiAgentService {
 
           const sonarr = clients().sonarr;
           const series = withProperty(await sonarr.getSeries(params.seriesId), "monitored", params.monitored);
-          const results = await sonarr.updateSeries(series);
+          const results = await sonarr.updateSeriesById(params.seriesId, series, false);
           return toolResponse(results);
         },
       }),
@@ -414,7 +608,7 @@ export class PiAgentService {
 
           const sonarr = clients().sonarr;
           const series = setSeasonMonitored(await sonarr.getSeries(params.seriesId), params.seasonNumber, params.monitored);
-          const results = await sonarr.updateSeries(series);
+          const results = await sonarr.updateSeriesById(params.seriesId, series, false);
           return toolResponse(results);
         },
       }),
@@ -593,6 +787,31 @@ function withProperty(value: unknown, property: string, propertyValue: unknown):
   }
 
   return { ...value, [property]: propertyValue };
+}
+
+function withProperties(value: unknown, properties: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error("Arr response was not an object");
+  }
+
+  return { ...value, ...properties };
+}
+
+function pickDefined(value: object, keys: string[]): Record<string, unknown> {
+  const source = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  for (const key of keys) {
+    if (source[key] !== undefined) {
+      result[key] = source[key];
+    }
+  }
+
+  if (Object.keys(result).length === 0) {
+    throw new Error("At least one setting field must be provided");
+  }
+
+  return result;
 }
 
 function setSeasonMonitored(value: unknown, seasonNumber: number, monitored: boolean): Record<string, unknown> {
