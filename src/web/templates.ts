@@ -1,6 +1,7 @@
 import type { PiAuthSnapshot } from "../agent/pi-auth.js";
 import type { RuntimeSettings } from "../domain/settings.js";
 import type { ConversationSession } from "../storage/conversation.js";
+import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 
 export type ServiceStatus = {
   name: string;
@@ -14,6 +15,7 @@ export type SettingsPageData = {
   piAuth: PiAuthSnapshot;
   statuses: ServiceStatus[];
   sessions: ConversationSession[];
+  toolAgentTasks: ToolAgentTask[];
 };
 
 export function layout(title: string, body: string): string {
@@ -122,6 +124,7 @@ export function layout(title: string, body: string): string {
         <a href="#status">Status</a>
         <a href="#auth-services">Auth &amp; Services</a>
         <a href="#bot-settings">Bot Settings</a>
+        <a href="#tool-agent-tasks">Tool Agents</a>
         <a href="#memory">Memory</a>
       </nav>
     </header>
@@ -140,11 +143,11 @@ export function layout(title: string, body: string): string {
         return;
       }
 
-      if (form.dataset.refreshSessions !== "true") return;
+      if (form.dataset.refreshSessions !== "true" && form.dataset.refreshToolAgentTasks !== "true") return;
 
       event.preventDefault();
       const button = form.querySelector("button");
-      const target = document.getElementById("active-sessions-content");
+      const target = form.dataset.refreshToolAgentTasks === "true" ? document.getElementById("tool-agent-tasks-content") : document.getElementById("active-sessions-content");
       if (!target) return;
 
       if (button) button.disabled = true;
@@ -272,7 +275,7 @@ export function layout(title: string, body: string): string {
 }
 
 export function settingsPage(data: SettingsPageData): string {
-  const { settings, piAuth, statuses, sessions } = data;
+  const { settings, piAuth, statuses, sessions, toolAgentTasks } = data;
 
   return layout(
     "Settings",
@@ -322,6 +325,16 @@ export function settingsPage(data: SettingsPageData): string {
       <div class="section-body stack">
         ${memorySettingsGroup(settings)}
         ${memorySessions(sessions)}
+      </div>
+    </details>
+
+    <details id="tool-agent-tasks" class="section" open>
+      <summary class="section-header">
+        <h2>Tool Agents</h2>
+        <span class="subtle">Recent coordinator worker tasks.</span>
+      </summary>
+      <div class="section-body">
+        ${toolAgentTasksSection(toolAgentTasks)}
       </div>
     </details>
 
@@ -533,6 +546,41 @@ export function memorySessionsTable(sessions: ConversationSession[]): string {
         ${sessions.map(sessionRow).join("")}
       </tbody>
     </table></div>`;
+}
+
+function toolAgentTasksSection(tasks: ToolAgentTask[]): string {
+  return `<section class="group">
+    <div class="group-head group-head-row">
+      <div>
+        <h3>Recent Tasks</h3>
+        <p class="subtle">Workers are internal. This table is for diagnostics and control.</p>
+      </div>
+      <form class="refresh-form" method="post" action="/tool-agent-tasks" data-refresh-tool-agent-tasks="true">
+        <button class="icon-button" type="submit" name="refresh" value="tasks" aria-label="Refresh tool-agent tasks" title="Refresh tool-agent tasks">&#8635;</button>
+      </form>
+    </div>
+    <div id="tool-agent-tasks-content">${toolAgentTasksTable(tasks)}</div>
+  </section>`;
+}
+
+export function toolAgentTasksTable(tasks: ToolAgentTask[]): string {
+  return tasks.length === 0 ? `<div class="empty">No tool-agent tasks yet.</div>` : `<div class="wide-table"><table>
+    <thead><tr><th>Task</th><th>Status</th><th>Profile</th><th>Updated</th><th>Result / Error</th><th>Action</th></tr></thead>
+    <tbody>${tasks.map(toolAgentTaskRow).join("")}</tbody>
+  </table></div>`;
+}
+
+function toolAgentTaskRow(task: ToolAgentTask): string {
+  const canCancel = task.status === "queued" || task.status === "running";
+  const detail = task.error ?? task.resultText ?? task.prompt;
+  return `<tr>
+    <td><div class="session-label">${escapeHtml(task.title)}</div><div class="subtle session-key">${escapeHtml(task.id)}</div></td>
+    <td>${escapeHtml(task.status)}</td>
+    <td>${escapeHtml(task.toolProfile)}</td>
+    <td>${escapeHtml(formatDate(task.updatedAt))}</td>
+    <td><div class="preview-text">${escapeHtml(truncate(detail, 260))}</div></td>
+    <td>${canCancel ? `<form method="post" action="/tool-agent-tasks/cancel"><input type="hidden" name="taskId" value="${escapeAttribute(task.id)}"><button type="submit" class="danger">Cancel</button></form>` : `<span class="subtle">-</span>`}</td>
+  </tr>`;
 }
 
 function sessionRow(session: ConversationSession): string {

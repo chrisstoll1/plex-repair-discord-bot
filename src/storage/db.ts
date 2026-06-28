@@ -46,5 +46,34 @@ function migrate(db: AppDatabase): void {
 
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_key_created
       ON conversation_messages (conversation_key, created_at);
+
+    CREATE TABLE IF NOT EXISTS tool_agent_tasks (
+      id TEXT PRIMARY KEY,
+      parent_task_id TEXT,
+      conversation_key TEXT,
+      guild_id TEXT,
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      source_message_id TEXT,
+      status TEXT NOT NULL,
+      title TEXT NOT NULL,
+      tool_profile TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      input_json TEXT,
+      result_text TEXT,
+      result_json TEXT,
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_agent_tasks_conversation_updated
+      ON tool_agent_tasks (conversation_key, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_tool_agent_tasks_status_updated
+      ON tool_agent_tasks (status, updated_at);
   `);
 }

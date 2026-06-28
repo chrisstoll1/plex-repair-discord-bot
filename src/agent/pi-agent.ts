@@ -16,14 +16,36 @@ import type { RuntimeSettings } from "../domain/settings.js";
 import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
-import { REPAIRMAN_INSTRUCTIONS } from "./instructions.js";
+import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
+import { TOOL_PROFILES, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
 
 export type AgentRequestContext = {
   guildId?: string;
   channelId: string;
   userId: string;
   roles: string[];
+  conversationKey?: string;
+  sourceMessageId?: string;
   recentMessages?: ConversationMessage[];
+};
+
+type AgentSessionParams = {
+  systemPrompt: string;
+  prompt: string;
+  tools: ReturnType<typeof defineTool>[];
+  thinkingLevel?: RuntimeSettings["ai"]["thinkingLevel"];
+};
+
+type StartToolAgentParams = {
+  title: string;
+  toolProfile: ToolProfile;
+  prompt: string;
+  input?: unknown;
+  parentTaskId?: string;
+};
+
+type StartManyToolAgentsParams = {
+  tasks: StartToolAgentParams[];
 };
 
 type RadarrMovieSettingsParams = {
@@ -100,13 +122,61 @@ type ManualImportExecuteToolParams = ManualImportToolParams & {
 };
 
 export class PiAgentService {
+  private queue: ToolAgentQueueService | undefined;
+
   constructor(
     private readonly config: AppConfig,
     private readonly store: SettingsStore,
     private readonly logger?: Logger,
   ) {}
 
+  setToolAgentQueue(queue: ToolAgentQueueService): void {
+    this.queue = queue;
+  }
+
   async runDiscordRequest(message: string, context: AgentRequestContext): Promise<string> {
+    if (!this.queue) throw new Error("Tool-agent queue is not initialized");
+
+    const settings = readRuntimeSettings(this.store);
+    const { recentMessages, ...discordContext } = context;
+    const prompt = [
+      `Discord context: ${JSON.stringify(discordContext)}`,
+      `Repair policy: ${JSON.stringify(settings.repair)}`,
+      formatRecentMessages(recentMessages),
+      `User request: ${message}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    return this.runAgentSession({
+      systemPrompt: COORDINATOR_INSTRUCTIONS,
+      prompt,
+      tools: this.createOrchestrationTools(context),
+      thinkingLevel: settings.ai.thinkingLevel,
+    });
+  }
+
+  async runToolAgentTask(task: { id: string; title: string; toolProfile: string; prompt: string; input?: unknown }, roles: string[]): Promise<string> {
+    if (!isToolProfile(task.toolProfile)) throw new Error(`Unknown tool profile: ${task.toolProfile}`);
+    const settings = readRuntimeSettings(this.store);
+    const prompt = [
+      `Task ID: ${task.id}`,
+      `Task title: ${task.title}`,
+      task.input === undefined ? undefined : `Task input: ${JSON.stringify(task.input)}`,
+      `Assigned task: ${task.prompt}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    return this.runAgentSession({
+      systemPrompt: TOOL_AGENT_INSTRUCTIONS,
+      prompt,
+      tools: this.createTools({ channelId: "tool-agent", userId: "tool-agent", roles }, TOOL_PROFILES[task.toolProfile]),
+      thinkingLevel: settings.ai.thinkingLevel,
+    });
+  }
+
+  private async runAgentSession(params: AgentSessionParams): Promise<string> {
     fs.mkdirSync(this.config.piAgentDir, { recursive: true });
 
     const settings = readRuntimeSettings(this.store);
@@ -123,7 +193,7 @@ export class PiAgentService {
       cwd: process.cwd(),
       agentDir: this.config.piAgentDir,
       settingsManager,
-      systemPromptOverride: () => REPAIRMAN_INSTRUCTIONS,
+      systemPromptOverride: () => params.systemPrompt,
     });
     await loader.reload();
 
@@ -134,9 +204,9 @@ export class PiAgentService {
       authStorage,
       modelRegistry,
       model,
-      thinkingLevel: settings.ai.thinkingLevel,
+      thinkingLevel: params.thinkingLevel ?? settings.ai.thinkingLevel,
       noTools: "builtin",
-      customTools: this.createTools(context),
+      customTools: params.tools,
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader: loader,
@@ -148,18 +218,8 @@ export class PiAgentService {
       }
     });
 
-    const { recentMessages, ...discordContext } = context;
-    const prompt = [
-      `Discord context: ${JSON.stringify(discordContext)}`,
-      `Repair policy: ${JSON.stringify(settings.repair)}`,
-      formatRecentMessages(recentMessages),
-      `User request: ${message}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
     try {
-      await session.prompt(prompt);
+      await session.prompt(params.prompt);
       return output.trim() || "I completed the request but did not produce a text response.";
     } finally {
       unsubscribe();
@@ -167,10 +227,99 @@ export class PiAgentService {
     }
   }
 
-  private createTools(context: AgentRequestContext) {
-    const clients = () => createMediaClients(this.store, this.logger);
+  private createOrchestrationTools(context: AgentRequestContext) {
+    const queue = () => {
+      if (!this.queue) throw new Error("Tool-agent queue is not initialized");
+      return this.queue;
+    };
+    const profileSchema = Type.Union(toolProfileNames().map((profile) => Type.Literal(profile)) as [ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>]);
+    const taskSchema = Type.Object({
+      title: Type.String({ description: "Short task title" }),
+      toolProfile: profileSchema,
+      prompt: Type.String({ description: "Specific scoped task for the tool agent" }),
+      input: Type.Optional(Type.Any({ description: "Optional structured task input" })),
+      parentTaskId: Type.Optional(Type.String({ description: "Optional parent tool-agent task ID" })),
+    });
 
     return [
+      defineTool({
+        name: "start_tool_agent",
+        label: "Start tool agent",
+        description: "Run one focused read-only tool-agent task. This first version waits for completion before returning.",
+        parameters: taskSchema,
+        execute: async (_toolCallId, params: StartToolAgentParams) => {
+          const task = queue().enqueue(this.toToolAgentTaskRequest(params, context));
+          return toolResponse(summarizeTask(await queue().waitForTask(task.id)));
+        },
+      }),
+      defineTool({
+        name: "start_many_tool_agents",
+        label: "Start many tool agents",
+        description: "Run multiple independent read-only tool-agent tasks in parallel. This first version waits for all tasks before returning.",
+        parameters: Type.Object({ tasks: Type.Array(taskSchema, { description: "Independent tool-agent tasks to run" }) }),
+        execute: async (_toolCallId, params: StartManyToolAgentsParams) => {
+          const tasks = params.tasks.map((task) => queue().enqueue(this.toToolAgentTaskRequest(task, context)));
+          const completed = await Promise.all(tasks.map((task) => queue().waitForTask(task.id)));
+          return toolResponse(completed.map(summarizeTask));
+        },
+      }),
+      defineTool({
+        name: "get_tool_agent_task",
+        label: "Get tool-agent task",
+        description: "Read one tool-agent task status and result.",
+        parameters: Type.Object({ taskId: Type.String({ description: "Tool-agent task ID" }) }),
+        execute: async (_toolCallId, params: { taskId: string }) => toolResponse(summarizeTask(queue().get(params.taskId))),
+      }),
+      defineTool({
+        name: "list_tool_agent_tasks",
+        label: "List tool-agent tasks",
+        description: "List recent tool-agent tasks for this Discord conversation or a parent task.",
+        parameters: Type.Object({
+          parentTaskId: Type.Optional(Type.String({ description: "Optional parent task ID" })),
+          limit: Type.Optional(Type.Number({ description: "Maximum tasks to return" })),
+        }),
+        execute: async (_toolCallId, params: { parentTaskId?: string; limit?: number }) =>
+          toolResponse(queue().list({ conversationKey: context.conversationKey, parentTaskId: params.parentTaskId, limit: params.limit }).map(summarizeTask)),
+      }),
+      defineTool({
+        name: "cancel_tool_agent_task",
+        label: "Cancel tool-agent task",
+        description: "Cancel a queued task or mark a running task as cancellation requested.",
+        parameters: Type.Object({ taskId: Type.String({ description: "Tool-agent task ID" }) }),
+        execute: async (_toolCallId, params: { taskId: string }) => toolResponse(summarizeTask(queue().cancel(params.taskId))),
+      }),
+      defineTool({
+        name: "summarize_tool_agent_results",
+        label: "Summarize tool-agent results",
+        description: "Return compact summaries of recent completed tool-agent tasks for this conversation or parent task.",
+        parameters: Type.Object({
+          parentTaskId: Type.Optional(Type.String({ description: "Optional parent task ID" })),
+          limit: Type.Optional(Type.Number({ description: "Maximum tasks to summarize" })),
+        }),
+        execute: async (_toolCallId, params: { parentTaskId?: string; limit?: number }) => {
+          const tasks = queue().list({ conversationKey: context.conversationKey, parentTaskId: params.parentTaskId, limit: params.limit }).filter((task) => task.status === "succeeded");
+          return toolResponse(tasks.map(summarizeTask));
+        },
+      }),
+    ];
+  }
+
+  private toToolAgentTaskRequest(params: StartToolAgentParams, context: AgentRequestContext): ToolAgentTaskRequest {
+    return {
+      ...params,
+      channelId: context.channelId,
+      userId: context.userId,
+      guildId: context.guildId,
+      conversationKey: context.conversationKey,
+      sourceMessageId: context.sourceMessageId,
+      roles: context.roles,
+    };
+  }
+
+  private createTools(context: AgentRequestContext, toolNames?: readonly string[]) {
+    const clients = () => createMediaClients(this.store, this.logger);
+
+    const tools = [
       defineTool({
         name: "search_radarr_movies",
         label: "Search Radarr movies",
@@ -1037,8 +1186,39 @@ export class PiAgentService {
         }),
       }),
     ];
+
+    if (!toolNames) return tools;
+    const allowed = new Set(toolNames);
+    return tools.filter((tool) => allowed.has(getToolName(tool)));
   }
 }
+
+const COORDINATOR_INSTRUCTIONS = `
+You are the coordinator agent for Plex Repairman, a Discord bot that helps diagnose Plex, Sonarr, and Radarr media issues.
+
+You do not have direct Sonarr, Radarr, or Plex tools. To inspect media services, start one or more focused tool-agent tasks.
+
+Behavior:
+- Be concise and operational.
+- Break large user requests into focused tool-agent tasks.
+- Queue independent tasks in parallel when useful.
+- Use completed tool-agent results to decide whether follow-up tasks are needed.
+- Return a natural user-facing answer based only on completed tool-agent results.
+- Do not expose tool-agent IDs, profiles, queue internals, or implementation details unless the user asks for diagnostics.
+- Do not claim an action was performed unless a completed tool-agent result says so.
+- If a repair or write action is needed, explain the recommended action and ask the user to confirm it. Do not self-confirm repairs.
+- Never request or expose API keys, tokens, OAuth secrets, or other credentials.
+`;
+
+const TOOL_AGENT_INSTRUCTIONS = `
+You are a focused read-only tool agent for Plex Repairman.
+
+Complete only the assigned task. Use only the tools available in this session. Do not ask the user questions. Do not perform work outside the task scope.
+
+Return concise structured findings, including evidence from tool results and any recommended follow-up tasks. If repair or write work appears necessary, recommend it without attempting it.
+
+Never request or expose API keys, tokens, OAuth secrets, or other credentials.
+`;
 
 function formatRecentMessages(messages: ConversationMessage[] | undefined): string | undefined {
   if (!messages?.length) return undefined;
@@ -1056,6 +1236,28 @@ function toolResponse(results: unknown) {
     content: [{ type: "text" as const, text: JSON.stringify(results).slice(0, 12000) }],
     details: results,
   };
+}
+
+function summarizeTask(task: { id: string; status: string; title: string; toolProfile: string; resultText?: string; error?: string; createdAt?: string; startedAt?: string; finishedAt?: string } | undefined) {
+  if (!task) return { found: false };
+  return {
+    id: task.id,
+    status: task.status,
+    title: task.title,
+    toolProfile: task.toolProfile,
+    resultText: task.resultText,
+    error: task.error,
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt,
+  };
+}
+
+function getToolName(tool: unknown): string {
+  if (tool && typeof tool === "object" && "name" in tool && typeof (tool as { name?: unknown }).name === "string") {
+    return (tool as { name: string }).name;
+  }
+  return "";
 }
 
 function authorizeRepair(

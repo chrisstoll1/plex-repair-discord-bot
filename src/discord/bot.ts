@@ -90,6 +90,8 @@ export class DiscordBotService {
           channelId: message.channelId,
           userId: message.author.id,
           roles,
+          conversationKey,
+          sourceMessageId: message.id,
           recentMessages,
         });
 

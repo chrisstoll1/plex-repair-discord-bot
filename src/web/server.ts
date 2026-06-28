@@ -5,13 +5,15 @@ import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings, timeoutSet
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ConversationStore } from "../storage/conversation.js";
+import type { ToolAgentQueueService } from "../agent/tool-agent-queue.js";
 import type { DiscordBotService } from "../discord/bot.js";
 import type { PiAuthService } from "../agent/pi-auth.js";
-import { escapeHtml, layout, memorySessionsTable, piAuthPanel, type ServiceStatus, settingsPage, statusTable } from "./templates.js";
+import { escapeHtml, layout, memorySessionsTable, piAuthPanel, type ServiceStatus, settingsPage, statusTable, toolAgentTasksTable } from "./templates.js";
 
 export async function createWebServer(
   store: SettingsStore,
   conversations: ConversationStore,
+  toolAgentQueue: ToolAgentQueueService,
   discord: DiscordBotService,
   piAuth: PiAuthService,
   logger: Logger,
@@ -41,8 +43,9 @@ export async function createWebServer(
     const piAuthSnapshot = await piAuth.refreshExpiredCredential();
     const sessions = conversations.listSessions(settings.memory.ttlHours);
     const statuses = await collectStatuses(store, logger, settings, piAuthSnapshot.configured, sessions.length);
+    const toolAgentTasks = toolAgentQueue.list({ limit: 50 });
 
-    reply.type("text/html").send(settingsPage({ settings, piAuth: piAuthSnapshot, statuses, sessions }));
+    reply.type("text/html").send(settingsPage({ settings, piAuth: piAuthSnapshot, statuses, sessions, toolAgentTasks }));
   });
 
   app.get("/settings", async (_request, reply) => {
@@ -111,6 +114,16 @@ export async function createWebServer(
   app.post("/memory/sessions", async (_request, reply) => {
     const settings = readRuntimeSettings(store);
     reply.type("text/html").send(memorySessionsTable(conversations.listSessions(settings.memory.ttlHours)));
+  });
+
+  app.post("/tool-agent-tasks", async (_request, reply) => {
+    reply.type("text/html").send(toolAgentTasksTable(toolAgentQueue.list({ limit: 50 })));
+  });
+
+  app.post("/tool-agent-tasks/cancel", async (request, reply) => {
+    const body = request.body as Record<string, string | undefined>;
+    if (body.taskId) toolAgentQueue.cancel(body.taskId);
+    reply.redirect("/#tool-agent-tasks");
   });
 
   app.post("/status/table", async (_request, reply) => {
