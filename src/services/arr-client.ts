@@ -25,6 +25,51 @@ export type RenameFilesParams = {
   fileIds: number[];
 };
 
+export type QueueQueryParams = {
+  page?: number;
+  pageSize?: number;
+  includeItem?: boolean;
+  itemIds?: number[];
+  status?: string[];
+};
+
+export type QueueDetailsParams = {
+  itemId: number;
+  episodeIds?: number[];
+  includeItem?: boolean;
+};
+
+export type QueueRemoveParams = {
+  queueId: number;
+  removeFromClient: boolean;
+  blocklist: boolean;
+  skipRedownload: boolean;
+  changeCategory: boolean;
+};
+
+export type HistoryQueryParams = {
+  page?: number;
+  pageSize?: number;
+  itemId?: number;
+  episodeId?: number;
+  downloadId?: string;
+  includeItem?: boolean;
+};
+
+export type BlocklistQueryParams = {
+  page?: number;
+  pageSize?: number;
+  itemIds?: number[];
+};
+
+export type ManualImportQueryParams = {
+  folder?: string;
+  downloadId?: string;
+  itemId?: number;
+  seasonNumber?: number;
+  filterExistingFiles?: boolean;
+};
+
 export class ArrClient {
   constructor(
     private readonly name: "sonarr" | "radarr",
@@ -75,6 +120,76 @@ export class ArrClient {
   async getMovieRenamePreviews(movieId: number): Promise<unknown> {
     this.assertService("radarr");
     return this.request<unknown>(`/api/v3/rename?movieId=${movieId}`);
+  }
+
+  async getQueue(params: QueueQueryParams = {}): Promise<unknown> {
+    return this.request<unknown>(buildQueryPath("/api/v3/queue", this.mediaQueryParams(params)));
+  }
+
+  async getQueueDetails(params: QueueDetailsParams): Promise<unknown> {
+    const query = this.name === "sonarr"
+      ? { seriesId: params.itemId, episodeIds: params.episodeIds, includeSeries: params.includeItem, includeEpisode: params.includeItem }
+      : { movieId: params.itemId, includeMovie: params.includeItem };
+    return this.request<unknown>(buildQueryPath("/api/v3/queue/details", query));
+  }
+
+  async removeQueueItem(params: QueueRemoveParams): Promise<unknown> {
+    return this.request<unknown>(
+      buildQueryPath(`/api/v3/queue/${params.queueId}`, {
+        removeFromClient: params.removeFromClient,
+        blocklist: params.blocklist,
+        skipRedownload: params.skipRedownload,
+        changeCategory: params.changeCategory,
+      }),
+      { method: "DELETE" },
+    );
+  }
+
+  async getHistory(params: HistoryQueryParams = {}): Promise<unknown> {
+    const itemKey = this.name === "sonarr" ? "seriesIds" : "movieIds";
+    return this.request<unknown>(
+      buildQueryPath("/api/v3/history", {
+        page: params.page,
+        pageSize: params.pageSize,
+        [itemKey]: params.itemId === undefined ? undefined : [params.itemId],
+        episodeId: this.name === "sonarr" ? params.episodeId : undefined,
+        downloadId: params.downloadId,
+        includeSeries: this.name === "sonarr" ? params.includeItem : undefined,
+        includeEpisode: this.name === "sonarr" ? params.includeItem : undefined,
+        includeMovie: this.name === "radarr" ? params.includeItem : undefined,
+      }),
+    );
+  }
+
+  async getBlocklist(params: BlocklistQueryParams = {}): Promise<unknown> {
+    const itemKey = this.name === "sonarr" ? "seriesIds" : "movieIds";
+    return this.request<unknown>(
+      buildQueryPath("/api/v3/blocklist", {
+        page: params.page,
+        pageSize: params.pageSize,
+        [itemKey]: params.itemIds,
+      }),
+    );
+  }
+
+  async getManualImport(params: ManualImportQueryParams): Promise<unknown> {
+    return this.request<unknown>(buildQueryPath("/api/v3/manualimport", this.manualImportQueryParams(params)));
+  }
+
+  async executeManualImport(params: ManualImportQueryParams, importIds: number[]): Promise<unknown> {
+    const preview = await this.getManualImport(params);
+    if (!Array.isArray(preview)) {
+      throw new Error("Manual import preview response was not an array");
+    }
+
+    const selected = preview.filter((item) => isRecord(item) && typeof item.id === "number" && importIds.includes(item.id));
+    if (selected.length !== importIds.length) {
+      const foundIds = new Set(selected.map((item) => item.id));
+      const missing = importIds.filter((id) => !foundIds.has(id));
+      throw new Error(`Manual import preview did not include import IDs: ${missing.join(", ")}`);
+    }
+
+    return this.request<unknown>("/api/v3/manualimport", { method: "POST", body: selected });
   }
 
   async getEpisodeFile(episodeFileId: number): Promise<unknown> {
@@ -305,8 +420,67 @@ export class ArrClient {
       throw new Error(`This operation is only available for ${expected}`);
     }
   }
+
+  private mediaQueryParams(params: QueueQueryParams): Record<string, QueryValue> {
+    return this.name === "sonarr"
+      ? {
+          page: params.page,
+          pageSize: params.pageSize,
+          includeUnknownSeriesItems: true,
+          includeSeries: params.includeItem,
+          includeEpisode: params.includeItem,
+          seriesIds: params.itemIds,
+          status: params.status,
+        }
+      : {
+          page: params.page,
+          pageSize: params.pageSize,
+          includeUnknownMovieItems: true,
+          includeMovie: params.includeItem,
+          movieIds: params.itemIds,
+          status: params.status,
+        };
+  }
+
+  private manualImportQueryParams(params: ManualImportQueryParams): Record<string, QueryValue> {
+    return this.name === "sonarr"
+      ? {
+          folder: params.folder,
+          downloadId: params.downloadId,
+          seriesId: params.itemId,
+          seasonNumber: params.seasonNumber,
+          filterExistingFiles: params.filterExistingFiles,
+        }
+      : {
+          folder: params.folder,
+          downloadId: params.downloadId,
+          movieId: params.itemId,
+          filterExistingFiles: params.filterExistingFiles,
+        };
+  }
 }
+
+type QueryValue = string | number | boolean | Array<string | number | boolean> | undefined;
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function buildQueryPath(path: string, params: Record<string, QueryValue>): string {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      searchParams.append(key, String(item));
+    }
+  }
+
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

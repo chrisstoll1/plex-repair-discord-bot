@@ -51,6 +51,54 @@ type SonarrSeriesSettingsParams = {
   confirmed?: boolean;
 };
 
+type QueueToolParams = {
+  page?: number;
+  pageSize?: number;
+  itemId?: number;
+  status?: string[];
+};
+
+type QueueDetailsToolParams = {
+  itemId: number;
+  episodeIds?: number[];
+};
+
+type QueueRemoveToolParams = {
+  queueId: number;
+  removeFromClient: boolean;
+  blocklist: boolean;
+  skipRedownload?: boolean;
+  changeCategory?: boolean;
+  confirmed?: boolean;
+};
+
+type HistoryToolParams = {
+  page?: number;
+  pageSize?: number;
+  itemId?: number;
+  episodeId?: number;
+  downloadId?: string;
+};
+
+type BlocklistToolParams = {
+  page?: number;
+  pageSize?: number;
+  itemIds?: number[];
+};
+
+type ManualImportToolParams = {
+  folder?: string;
+  downloadId?: string;
+  itemId?: number;
+  seasonNumber?: number;
+  filterExistingFiles?: boolean;
+};
+
+type ManualImportExecuteToolParams = ManualImportToolParams & {
+  importIds: number[];
+  confirmed?: boolean;
+};
+
 export class PiAgentService {
   constructor(
     private readonly config: AppConfig,
@@ -214,6 +262,161 @@ export class PiAgentService {
         parameters: Type.Object({}),
         execute: async () => {
           const results = await clients().sonarr.getRootFolders();
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_radarr_queue",
+        label: "Get Radarr queue",
+        description: "Inspect Radarr download/import queue items. Use before retrying or removing a Radarr queue item.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Radarr movie ID filter" })),
+          status: Type.Optional(Type.Array(Type.String(), { description: "Optional queue status filters" })),
+        }),
+        execute: async (_toolCallId, params: QueueToolParams) => {
+          const results = await clients().radarr.getQueue({
+            page: params.page,
+            pageSize: params.pageSize,
+            itemIds: params.itemId === undefined ? undefined : [params.itemId],
+            status: params.status,
+            includeItem: true,
+          });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_sonarr_queue",
+        label: "Get Sonarr queue",
+        description: "Inspect Sonarr download/import queue items. Use before retrying or removing a Sonarr queue item.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Sonarr series ID filter" })),
+          status: Type.Optional(Type.Array(Type.String(), { description: "Optional queue status filters" })),
+        }),
+        execute: async (_toolCallId, params: QueueToolParams) => {
+          const results = await clients().sonarr.getQueue({
+            page: params.page,
+            pageSize: params.pageSize,
+            itemIds: params.itemId === undefined ? undefined : [params.itemId],
+            status: params.status,
+            includeItem: true,
+          });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_radarr_queue_details",
+        label: "Get Radarr queue details",
+        description: "Inspect detailed Radarr queue entries for one movie. Use this for failed/stuck import diagnosis before retry/remove actions.",
+        parameters: Type.Object({ itemId: Type.Number({ description: "Radarr movie ID" }) }),
+        execute: async (_toolCallId, params: QueueDetailsToolParams) => {
+          const results = await clients().radarr.getQueueDetails({ itemId: params.itemId, includeItem: true });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_sonarr_queue_details",
+        label: "Get Sonarr queue details",
+        description: "Inspect detailed Sonarr queue entries for one series, optionally limited to episode IDs. Use this for failed/stuck import diagnosis before retry/remove actions.",
+        parameters: Type.Object({
+          itemId: Type.Number({ description: "Sonarr series ID" }),
+          episodeIds: Type.Optional(Type.Array(Type.Number(), { description: "Optional Sonarr episode IDs" })),
+        }),
+        execute: async (_toolCallId, params: QueueDetailsToolParams) => {
+          const results = await clients().sonarr.getQueueDetails({ itemId: params.itemId, episodeIds: params.episodeIds, includeItem: true });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_radarr_history",
+        label: "Get Radarr history",
+        description: "Inspect Radarr history for grabs, imports, failures, and deletes. Use before queue removal, blocklist inspection, or manual import execution.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Radarr movie ID filter" })),
+          downloadId: Type.Optional(Type.String({ description: "Optional download ID filter" })),
+        }),
+        execute: async (_toolCallId, params: HistoryToolParams) => {
+          const results = await clients().radarr.getHistory({ ...params, includeItem: true });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_sonarr_history",
+        label: "Get Sonarr history",
+        description: "Inspect Sonarr history for grabs, imports, failures, and deletes. Use before queue removal, blocklist inspection, or manual import execution.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Sonarr series ID filter" })),
+          episodeId: Type.Optional(Type.Number({ description: "Optional Sonarr episode ID filter" })),
+          downloadId: Type.Optional(Type.String({ description: "Optional download ID filter" })),
+        }),
+        execute: async (_toolCallId, params: HistoryToolParams) => {
+          const results = await clients().sonarr.getHistory({ ...params, includeItem: true });
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_radarr_blocklist",
+        label: "Get Radarr blocklist",
+        description: "Inspect Radarr blocklist entries. Use when a release cannot be grabbed or a retry keeps being rejected.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemIds: Type.Optional(Type.Array(Type.Number(), { description: "Optional Radarr movie IDs" })),
+        }),
+        execute: async (_toolCallId, params: BlocklistToolParams) => {
+          const results = await clients().radarr.getBlocklist(params);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_sonarr_blocklist",
+        label: "Get Sonarr blocklist",
+        description: "Inspect Sonarr blocklist entries. Use when a release cannot be grabbed or a retry keeps being rejected.",
+        parameters: Type.Object({
+          page: Type.Optional(Type.Number({ description: "Page number, default 1" })),
+          pageSize: Type.Optional(Type.Number({ description: "Page size, default 10" })),
+          itemIds: Type.Optional(Type.Array(Type.Number(), { description: "Optional Sonarr series IDs" })),
+        }),
+        execute: async (_toolCallId, params: BlocklistToolParams) => {
+          const results = await clients().sonarr.getBlocklist(params);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "preview_radarr_manual_import",
+        label: "Preview Radarr manual import",
+        description: "Preview Radarr manual-import candidates from a folder or download ID. Use before execute_radarr_manual_import; do not execute imports without matching preview IDs.",
+        parameters: Type.Object({
+          folder: Type.Optional(Type.String({ description: "Folder path to scan" })),
+          downloadId: Type.Optional(Type.String({ description: "Download ID to scan" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Radarr movie ID" })),
+          filterExistingFiles: Type.Optional(Type.Boolean({ description: "Whether to filter existing files, default true" })),
+        }),
+        execute: async (_toolCallId, params: ManualImportToolParams) => {
+          const results = await clients().radarr.getManualImport(params);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "preview_sonarr_manual_import",
+        label: "Preview Sonarr manual import",
+        description: "Preview Sonarr manual-import candidates from a folder or download ID. Use before execute_sonarr_manual_import; do not execute imports without matching preview IDs.",
+        parameters: Type.Object({
+          folder: Type.Optional(Type.String({ description: "Folder path to scan" })),
+          downloadId: Type.Optional(Type.String({ description: "Download ID to scan" })),
+          itemId: Type.Optional(Type.Number({ description: "Optional Sonarr series ID" })),
+          seasonNumber: Type.Optional(Type.Number({ description: "Optional season number" })),
+          filterExistingFiles: Type.Optional(Type.Boolean({ description: "Whether to filter existing files, default true" })),
+        }),
+        execute: async (_toolCallId, params: ManualImportToolParams) => {
+          const results = await clients().sonarr.getManualImport(params);
           return toolResponse(results);
         },
       }),
@@ -437,6 +640,101 @@ export class PiAgentService {
 
           const results = await clients().sonarr.grabRelease({ guid: params.guid, indexerId: params.indexerId });
           return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "remove_radarr_queue_item",
+        label: "Remove Radarr queue item",
+        description: "Remove a Radarr queue item after inspecting queue details/history. Explicitly set removeFromClient and blocklist based on the user's confirmed intent. Requires confirmation when configured.",
+        parameters: Type.Object({
+          queueId: Type.Number({ description: "Radarr queue item ID" }),
+          removeFromClient: Type.Boolean({ description: "Whether to remove the download from the download client" }),
+          blocklist: Type.Boolean({ description: "Whether to blocklist the release" }),
+          skipRedownload: Type.Optional(Type.Boolean({ description: "Whether to skip redownload" })),
+          changeCategory: Type.Optional(Type.Boolean({ description: "Whether to change download category instead of removal when supported" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: QueueRemoveToolParams) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Remove Radarr queue item ID ${params.queueId} removeFromClient=${params.removeFromClient} blocklist=${params.blocklist} skipRedownload=${params.skipRedownload ?? false} changeCategory=${params.changeCategory ?? false}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().radarr.removeQueueItem({ ...params, skipRedownload: params.skipRedownload ?? false, changeCategory: params.changeCategory ?? false });
+          return toolResponse(results ?? { removed: true });
+        },
+      }),
+      defineTool({
+        name: "remove_sonarr_queue_item",
+        label: "Remove Sonarr queue item",
+        description: "Remove a Sonarr queue item after inspecting queue details/history. Explicitly set removeFromClient and blocklist based on the user's confirmed intent. Requires confirmation when configured.",
+        parameters: Type.Object({
+          queueId: Type.Number({ description: "Sonarr queue item ID" }),
+          removeFromClient: Type.Boolean({ description: "Whether to remove the download from the download client" }),
+          blocklist: Type.Boolean({ description: "Whether to blocklist the release" }),
+          skipRedownload: Type.Optional(Type.Boolean({ description: "Whether to skip redownload" })),
+          changeCategory: Type.Optional(Type.Boolean({ description: "Whether to change download category instead of removal when supported" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: QueueRemoveToolParams) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Remove Sonarr queue item ID ${params.queueId} removeFromClient=${params.removeFromClient} blocklist=${params.blocklist} skipRedownload=${params.skipRedownload ?? false} changeCategory=${params.changeCategory ?? false}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().sonarr.removeQueueItem({ ...params, skipRedownload: params.skipRedownload ?? false, changeCategory: params.changeCategory ?? false });
+          return toolResponse(results ?? { removed: true });
+        },
+      }),
+      defineTool({
+        name: "execute_radarr_manual_import",
+        label: "Execute Radarr manual import",
+        description: "Execute Radarr manual import for IDs returned by preview_radarr_manual_import using the same folder/download/movie filters. Requires confirmation when configured.",
+        parameters: Type.Object({
+          importIds: Type.Array(Type.Number(), { description: "Manual import candidate IDs from preview_radarr_manual_import" }),
+          folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
+          downloadId: Type.Optional(Type.String({ description: "Same download ID used for preview" })),
+          itemId: Type.Optional(Type.Number({ description: "Same Radarr movie ID used for preview" })),
+          filterExistingFiles: Type.Optional(Type.Boolean({ description: "Same filterExistingFiles value used for preview" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: ManualImportExecuteToolParams) => {
+          const query = manualImportQuery(params);
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Execute Radarr manual import IDs ${params.importIds.join(", ")} with query ${JSON.stringify(query)}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().radarr.executeManualImport(query, params.importIds);
+          return toolResponse(results ?? { imported: true });
+        },
+      }),
+      defineTool({
+        name: "execute_sonarr_manual_import",
+        label: "Execute Sonarr manual import",
+        description: "Execute Sonarr manual import for IDs returned by preview_sonarr_manual_import using the same folder/download/series/season filters. Requires confirmation when configured.",
+        parameters: Type.Object({
+          importIds: Type.Array(Type.Number(), { description: "Manual import candidate IDs from preview_sonarr_manual_import" }),
+          folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
+          downloadId: Type.Optional(Type.String({ description: "Same download ID used for preview" })),
+          itemId: Type.Optional(Type.Number({ description: "Same Sonarr series ID used for preview" })),
+          seasonNumber: Type.Optional(Type.Number({ description: "Same season number used for preview" })),
+          filterExistingFiles: Type.Optional(Type.Boolean({ description: "Same filterExistingFiles value used for preview" })),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: ManualImportExecuteToolParams) => {
+          const query = manualImportQuery(params);
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Execute Sonarr manual import IDs ${params.importIds.join(", ")} with query ${JSON.stringify(query)}`,
+            confirmed: params.confirmed,
+          });
+          if (policy) return policy;
+
+          const results = await clients().sonarr.executeManualImport(query, params.importIds);
+          return toolResponse(results ?? { imported: true });
         },
       }),
       defineTool({
@@ -812,6 +1110,11 @@ function pickDefined(value: object, keys: string[]): Record<string, unknown> {
   }
 
   return result;
+}
+
+function manualImportQuery(params: ManualImportToolParams): ManualImportToolParams {
+  const query = pickDefined(params, ["folder", "downloadId", "itemId", "seasonNumber", "filterExistingFiles"]);
+  return query as ManualImportToolParams;
 }
 
 function setSeasonMonitored(value: unknown, seasonNumber: number, monitored: boolean): Record<string, unknown> {
