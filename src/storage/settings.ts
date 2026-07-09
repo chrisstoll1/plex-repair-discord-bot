@@ -22,7 +22,11 @@ export class SettingsStore {
   getJson<T>(key: string, fallback: T): T {
     const value = this.getString(key);
     if (!value) return fallback;
-    return JSON.parse(value) as T;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
   }
 
   setString(key: string, value: string, options?: { secret?: boolean }): void {

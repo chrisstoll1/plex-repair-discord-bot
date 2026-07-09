@@ -11,11 +11,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AppConfig } from "../config.js";
-import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
+import { readRuntimeSettings } from "../domain/settings.js";
 import type { RuntimeSettings } from "../domain/settings.js";
 import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
+import { COORDINATOR_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { authorizeRepair } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
 
@@ -1193,33 +1195,6 @@ export class PiAgentService {
   }
 }
 
-const COORDINATOR_INSTRUCTIONS = `
-You are the coordinator agent for Plex Repairman, a Discord bot that helps diagnose Plex, Sonarr, and Radarr media issues.
-
-You do not have direct Sonarr, Radarr, or Plex tools. To inspect media services, start one or more focused tool-agent tasks.
-
-Behavior:
-- Be concise and operational.
-- Break large user requests into focused tool-agent tasks.
-- Queue independent tasks in parallel when useful.
-- Use completed tool-agent results to decide whether follow-up tasks are needed.
-- Return a natural user-facing answer based only on completed tool-agent results.
-- Do not expose tool-agent IDs, profiles, queue internals, or implementation details unless the user asks for diagnostics.
-- Do not claim an action was performed unless a completed tool-agent result says so.
-- If a repair or write action is needed, explain the recommended action and ask the user to confirm it. Do not self-confirm repairs.
-- Never request or expose API keys, tokens, OAuth secrets, or other credentials.
-`;
-
-const TOOL_AGENT_INSTRUCTIONS = `
-You are a focused read-only tool agent for Plex Repairman.
-
-Complete only the assigned task. Use only the tools available in this session. Do not ask the user questions. Do not perform work outside the task scope.
-
-Return concise structured findings, including evidence from tool results and any recommended follow-up tasks. If repair or write work appears necessary, recommend it without attempting it.
-
-Never request or expose API keys, tokens, OAuth secrets, or other credentials.
-`;
-
 function formatRecentMessages(messages: ConversationMessage[] | undefined): string | undefined {
   if (!messages?.length) return undefined;
 
@@ -1258,27 +1233,6 @@ function getToolName(tool: unknown): string {
     return (tool as { name: string }).name;
   }
   return "";
-}
-
-function authorizeRepair(
-  settings: RuntimeSettings,
-  context: AgentRequestContext,
-  options: { action: string; confirmed?: boolean; destructive?: boolean },
-) {
-  const repairRoles = csvToSet(settings.discord.repairRoleIds);
-  if (repairRoles.size > 0 && !context.roles.some((role) => repairRoles.has(role))) {
-    return toolResponse({ blocked: true, reason: "User does not have an allowed repair role", action: options.action });
-  }
-
-  if (options.destructive && !settings.repair.allowDestructive) {
-    return toolResponse({ blocked: true, reason: "Destructive repair actions are disabled by policy", action: options.action });
-  }
-
-  if (settings.repair.requireConfirmation && !options.confirmed) {
-    return toolResponse({ confirmationRequired: true, action: options.action, reason: "Repair policy requires explicit confirmation" });
-  }
-
-  return undefined;
 }
 
 function withProperty(value: unknown, property: string, propertyValue: unknown): Record<string, unknown> {

@@ -41,12 +41,18 @@ export const timeoutSettingsSchema = z.object({
   releaseLookupSeconds: z.coerce.number().int().min(15).max(900).default(300),
 });
 
+export const repairSettingsSchema = z.object({
+  requireConfirmation: z.boolean().default(true),
+  allowDestructive: z.boolean().default(false),
+});
+
 export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
 export type ArrSettings = z.infer<typeof arrSettingsSchema>;
 export type PlexSettings = z.infer<typeof plexSettingsSchema>;
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 export type MemorySettings = z.infer<typeof memorySettingsSchema>;
 export type TimeoutSettings = z.infer<typeof timeoutSettingsSchema>;
+export type RepairSettings = z.infer<typeof repairSettingsSchema>;
 
 export type RuntimeSettings = {
   discord: DiscordSettings;
@@ -56,11 +62,13 @@ export type RuntimeSettings = {
   ai: AiSettings;
   memory: MemorySettings;
   timeouts: TimeoutSettings;
-  repair: {
-    requireConfirmation: boolean;
-    allowDestructive: boolean;
-  };
+  repair: RepairSettings;
 };
+
+const DEFAULT_AI_SETTINGS = aiSettingsSchema.parse({});
+const DEFAULT_MEMORY_SETTINGS = memorySettingsSchema.parse({});
+const DEFAULT_TIMEOUT_SETTINGS = timeoutSettingsSchema.parse({});
+const DEFAULT_REPAIR_SETTINGS = repairSettingsSchema.parse({});
 
 export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
   return {
@@ -85,27 +93,16 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
       url: store.getString("plex.url") ?? "",
       token: store.getString("plex.token") ?? "",
     },
-    ai: store.getJson("ai", aiSettingsSchema.parse({})),
-    memory: memorySettingsSchema.parse(
-      store.getJson("memory", {
-        enabled: true,
-        scope: "channel_user",
-        maxMessages: 10,
-        ttlHours: 24,
-        includeBotReplies: true,
-      }),
-    ),
-    timeouts: timeoutSettingsSchema.parse(
-      store.getJson("timeouts", {
-        standardSeconds: 60,
-        releaseLookupSeconds: 300,
-      }),
-    ),
-    repair: store.getJson("repair", {
-      requireConfirmation: true,
-      allowDestructive: false,
-    }),
+    ai: readJsonSetting(store, "ai", aiSettingsSchema, DEFAULT_AI_SETTINGS),
+    memory: readJsonSetting(store, "memory", memorySettingsSchema, DEFAULT_MEMORY_SETTINGS),
+    timeouts: readJsonSetting(store, "timeouts", timeoutSettingsSchema, DEFAULT_TIMEOUT_SETTINGS),
+    repair: readJsonSetting(store, "repair", repairSettingsSchema, DEFAULT_REPAIR_SETTINGS),
   };
+}
+
+function readJsonSetting<T>(store: SettingsStore, key: string, schema: z.ZodType<T>, fallback: T): T {
+  const parsed = schema.safeParse(store.getJson(key, fallback));
+  return parsed.success ? parsed.data : fallback;
 }
 
 export function csvToSet(value: string | undefined): Set<string> {

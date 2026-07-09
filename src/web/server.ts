@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import fs from "node:fs/promises";
 import type { Logger } from "pino";
-import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings, timeoutSettingsSchema } from "../domain/settings.js";
+import { aiSettingsSchema, memorySettingsSchema, readRuntimeSettings, repairSettingsSchema, timeoutSettingsSchema } from "../domain/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ConversationStore } from "../storage/conversation.js";
@@ -93,10 +93,13 @@ export async function createWebServer(
         releaseLookupSeconds: body.timeoutReleaseLookupSeconds,
       }),
     );
-    store.setJson("repair", {
-      requireConfirmation: body.repairRequireConfirmation === "true",
-      allowDestructive: body.repairAllowDestructive === "true",
-    });
+    store.setJson(
+      "repair",
+      repairSettingsSchema.parse({
+        requireConfirmation: body.repairRequireConfirmation === "true",
+        allowDestructive: body.repairAllowDestructive === "true",
+      }),
+    );
 
     await discord.restart();
     reply.redirect("/");
