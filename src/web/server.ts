@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
@@ -112,6 +113,11 @@ export async function createWebServer(
   });
 
   app.get("/health", async () => ({ ok: true }));
+
+  const repairmanImage = new URL("./assets/repairman.png", import.meta.url);
+  app.get("/repairman.png", async (_request, reply) => reply.type("image/png").send(await fs.readFile(repairmanImage)));
+  app.get("/favicon.png", async (_request, reply) => reply.type("image/png").send(await fs.readFile(repairmanImage)));
+  app.get("/favicon.ico", async (_request, reply) => reply.type("image/png").send(await fs.readFile(repairmanImage)));
 
   app.get("/api/settings", async () => ({ settings: publicSettings(readRuntimeSettings(store)) }));
 

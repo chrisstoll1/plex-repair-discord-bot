@@ -11,7 +11,7 @@ import { cn } from "../lib/utils";
 const buttonVariants = cva("inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal disabled:pointer-events-none disabled:opacity-45", {
   variants: {
     variant: {
-      primary: "bg-signal text-ink hover:bg-[#e1ff78]",
+      primary: "bg-signal text-[#17130b] hover:bg-[#f7c865]",
       secondary: "border border-line bg-[#131a20] text-zinc-100 hover:border-zinc-500 hover:bg-[#192229]",
       ghost: "text-zinc-400 hover:bg-white/5 hover:text-white",
       danger: "border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20",
@@ -39,7 +39,7 @@ export const Textarea = ({ className, ...props }: TextareaHTMLAttributes<HTMLTex
 export const Label = ({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) => <LabelPrimitive.Root className={cn("text-sm font-medium text-zinc-200", className)} {...props} />;
 
 export function Switch({ checked, onCheckedChange, "aria-label": ariaLabel }: { checked: boolean; onCheckedChange: (value: boolean) => void; "aria-label": string }) {
-  return <SwitchPrimitive.Root checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="relative h-6 w-11 rounded-full bg-zinc-700 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[22px] data-[state=checked]:bg-ink" /></SwitchPrimitive.Root>;
+  return <SwitchPrimitive.Root checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="relative h-6 w-11 rounded-full bg-zinc-700 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[22px] data-[state=checked]:bg-[#17130b]" /></SwitchPrimitive.Root>;
 }
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "good" | "warn" | "bad" | "neutral" | "info" }) {

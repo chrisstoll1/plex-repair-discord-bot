@@ -10,11 +10,11 @@
   text-rendering: optimizeLegibility;
 }
 
-* { scrollbar-width: thin; scrollbar-color: #29343d #090d11; }
-html { background: #070a0d; }
+* { scrollbar-width: thin; scrollbar-color: #3b4047 #111316; }
+html { background: #111316; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
-::selection { color: #070a0d; background: #d5ff45; }
+::selection { color: #111316; background: #f2b84b; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

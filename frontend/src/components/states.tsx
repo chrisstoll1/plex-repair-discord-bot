@@ -2,7 +2,7 @@ import { AlertTriangle, Inbox, LoaderCircle, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, Card } from "./ui";
 
-export function LoadingState({ label = "Loading operations data" }: { label?: string }) {
+export function LoadingState({ label = "Loading" }: { label?: string }) {
   return <div className="flex min-h-52 items-center justify-center gap-3 text-sm text-zinc-400"><LoaderCircle className="h-5 w-5 animate-spin text-signal" /><span>{label}</span></div>;
 }
 export function ErrorState({ error, retry }: { error: unknown; retry: () => void }) {

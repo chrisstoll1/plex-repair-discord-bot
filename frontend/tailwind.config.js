@@ -4,18 +4,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#070a0d",
-        panel: "#0d1217",
-        line: "#202931",
-        signal: "#d5ff45",
-        cyan: "#47d7e8",
+        ink: "#111316",
+        panel: "#191c20",
+        line: "#30343a",
+        signal: "#f2b84b",
+        cyan: "#7aa7d9",
       },
       fontFamily: {
         sans: ["Inter", "ui-sans-serif", "system-ui"],
         mono: ["IBM Plex Mono", "ui-monospace", "monospace"],
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(213,255,69,.15), 0 16px 50px rgba(0,0,0,.35)",
+        glow: "0 12px 32px rgba(0,0,0,.22)",
       },
     },
   },
