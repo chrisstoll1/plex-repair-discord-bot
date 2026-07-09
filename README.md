@@ -156,18 +156,18 @@ This compose example is for TrueNAS Custom App installs. Official TrueNAS catalo
 
 1. Start the container.
 2. Open `http://<host>:3000`.
-3. Go to `Settings`.
+3. Open `Connections`.
 4. Enter your Discord bot token and application ID.
 5. Configure allowed guild IDs and channel IDs if you want to restrict where the bot responds.
 6. Configure repair role IDs if only specific Discord roles should be allowed to run repair actions.
 7. Configure Sonarr URL and API key.
 8. Configure Radarr URL and API key.
 9. Configure Plex URL and token.
-10. Choose repair policy settings.
+10. Open `Bot Settings` and choose repair policy settings.
 11. Choose conversation memory settings.
 12. Save settings.
-13. Go to `Pi Auth` and connect OpenAI Codex auth with the device-code flow.
-14. Check the `Status` panel to confirm all services are reachable.
+13. Connect OpenAI Codex auth from the device-code panel on `Connections`.
+14. Check `Overview` to confirm all services are reachable.
 
 The portal intentionally has no built-in authentication. Run it only on a trusted network or put it behind a reverse proxy with access controls.
 
@@ -251,7 +251,7 @@ The bot should explain what it found and ask for confirmation before policy-cont
 
 ## Conversation Memory
 
-Conversation memory is configured in the Settings page.
+Conversation memory is configured on the `Bot Settings` page. Active sessions can be inspected and deleted from `Memory`.
 
 Available settings:
 
@@ -280,7 +280,7 @@ Memory is used only as prompt context. The app still creates a fresh AI session 
 
 ## Repair Policy
 
-Repair settings are configured in the portal.
+Repair settings are configured on the `Bot Settings` page.
 
 `Require confirmation for repair actions` controls whether the bot must ask before actions such as searches, grabs, monitoring changes, and deletes.
 
@@ -303,10 +303,10 @@ Important behavior:
 
 Plex Repairman uses Pi Coding Agent for the AI runtime and supports OpenAI Codex auth through a device-code flow.
 
-Open:
+Open the portal and select `Connections`:
 
 ```text
-http://<host>:3000/pi-auth
+http://<host>:3000/connections
 ```
 
 Start login, open the verification URL, enter the displayed code, and leave the page open until it completes.
@@ -317,7 +317,7 @@ Credentials are stored under:
 /config/pi/auth.json
 ```
 
-OAuth access tokens expire, but the SDK refreshes them automatically when possible. The portal also attempts to refresh expired credentials before showing auth status. If refresh fails, reconnect from the `Pi Auth` page.
+OAuth access tokens expire, but the SDK refreshes them automatically when possible. The portal also attempts to refresh expired credentials before showing auth status. If refresh fails, reconnect from `Connections`.
 
 ## Health Checks
 
@@ -329,10 +329,10 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It does not require Discord, Sonarr, Radarr, Plex, or Pi auth to be configured, so container orchestrators do not restart the app during first-time setup.
 
-For a detailed service connectivity page, open:
+Detailed service connectivity is available on the portal overview:
 
 ```text
-http://<host>:3000/health/services
+http://<host>:3000/
 ```
 
 ## Published Images
@@ -363,13 +363,17 @@ Install dependencies:
 
 ```bash
 npm install
+npm --prefix frontend install
 ```
 
-Run locally:
+Run the API and frontend development servers in separate terminals:
 
 ```bash
 npm run dev
+npm run dev:web
 ```
+
+The Vite development server proxies `/api` requests to the API on port `3000`.
 
 Typecheck:
 
@@ -381,6 +385,12 @@ Build:
 
 ```bash
 npm run build
+```
+
+Run tests:
+
+```bash
+npm test
 ```
 
 Run with the local development compose file:

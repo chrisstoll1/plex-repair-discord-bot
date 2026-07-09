@@ -7,6 +7,12 @@ type SettingRow = {
   secret: 0 | 1;
 };
 
+export type SettingsWriter = {
+  setString(key: string, value: string, options?: { secret?: boolean }): void;
+  setJson(key: string, value: unknown, options?: { secret?: boolean }): void;
+  delete(key: string): void;
+};
+
 export class SettingsStore {
   constructor(
     private readonly db: AppDatabase,
@@ -46,6 +52,14 @@ export class SettingsStore {
 
   setJson(key: string, value: unknown, options?: { secret?: boolean }): void {
     this.setString(key, JSON.stringify(value), options);
+  }
+
+  delete(key: string): void {
+    this.db.prepare("DELETE FROM app_settings WHERE key = ?").run(key);
+  }
+
+  transaction(operation: (writer: SettingsWriter) => void): void {
+    this.db.transaction(() => operation(this))();
   }
 
   listPublic(): Record<string, unknown> {

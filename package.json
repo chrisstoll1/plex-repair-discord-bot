@@ -7,12 +7,18 @@
   "description": "Discord chatbot for Plex/Sonarr/Radarr repair workflows powered by Pi Coding Agent.",
   "scripts": {
     "dev": "tsx src/main.ts",
-    "build": "tsc",
+    "dev:web": "npm --prefix frontend run dev",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc",
+    "build:web": "npm --prefix frontend run build",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && npm --prefix frontend run typecheck",
+    "test": "npm run test:server && npm --prefix frontend test",
+    "test:server": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.1",
+    "@fastify/static": "9.3.0",
     "better-sqlite3": "12.11.1",
     "discord.js": "14.26.4",
     "fastify": "5.8.5",

@@ -130,7 +130,7 @@ export class ConversationStore {
     }));
   }
 
-  deleteSession(conversationKey: string): void {
-    this.db.prepare("DELETE FROM conversation_messages WHERE conversation_key = ?").run(conversationKey);
+  deleteSession(conversationKey: string): boolean {
+    return this.db.prepare("DELETE FROM conversation_messages WHERE conversation_key = ?").run(conversationKey).changes > 0;
   }
 }

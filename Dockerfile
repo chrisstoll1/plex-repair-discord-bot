@@ -2,11 +2,13 @@ FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
+COPY frontend/package*.json ./frontend/
+RUN npm --prefix frontend ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY frontend ./frontend
 RUN npm run build
-RUN mkdir -p dist/web/assets && cp src/web/assets/* dist/web/assets/
 
 FROM node:24-bookworm-slim AS runtime
 
@@ -20,7 +22,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 
 VOLUME ["/config"]
