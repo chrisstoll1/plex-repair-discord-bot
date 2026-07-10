@@ -171,11 +171,15 @@ export async function createWebServer(
     return { deleted: true, conversationKey: body.conversationKey };
   });
 
+  app.delete("/api/memory/history", async () => ({ deleted: conversations.clearAll() }));
+
   app.get("/api/tasks", async (request, reply) => {
     const query = parseOrReply(taskQuerySchema, request.query, reply);
     if (!query) return;
     return { tasks: toolAgentQueue.list({ limit: query.limit }) };
   });
+
+  app.delete("/api/tasks/history", async () => ({ deleted: toolAgentQueue.clearHistory() }));
 
   app.post("/api/tasks/:id/cancel", async (request, reply) => {
     const params = parseOrReply(taskParamsSchema, request.params, reply);

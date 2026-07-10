@@ -79,6 +79,10 @@ export class ToolAgentQueueService {
     return this.store.list(params);
   }
 
+  clearHistory(): number {
+    return this.store.clearHistory();
+  }
+
   async cancel(id: string, scope?: ToolAgentTaskScope): Promise<ToolAgentTask | undefined> {
     const current = this.get(id, scope);
     if (!current || isTerminal(current)) return current;

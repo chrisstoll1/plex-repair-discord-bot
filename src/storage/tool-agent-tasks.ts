@@ -211,6 +211,20 @@ export class ToolAgentTaskStore {
       .run("Process restarted while this tool-agent task was running", now, now);
     return result.changes;
   }
+
+  clearHistory(): number {
+    return this.db
+      .prepare(
+        `DELETE FROM tool_agent_tasks
+         WHERE status IN ('succeeded', 'failed', 'cancelled')
+           AND id NOT IN (
+             SELECT parent_task_id
+             FROM tool_agent_tasks
+             WHERE parent_task_id IS NOT NULL AND status IN ('queued', 'running')
+           )`,
+      )
+      .run().changes;
+  }
 }
 
 function fromRow(row: ToolAgentTaskRow): ToolAgentTask {

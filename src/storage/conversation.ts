@@ -189,4 +189,8 @@ export class ConversationStore {
   deleteSession(conversationKey: string): boolean {
     return this.db.prepare("DELETE FROM conversation_messages WHERE conversation_key = ?").run(conversationKey).changes > 0;
   }
+
+  clearAll(): number {
+    return this.db.prepare("DELETE FROM conversation_messages").run().changes;
+  }
 }
