@@ -11,6 +11,7 @@ import { ToolAgentTaskStore } from "./storage/tool-agent-tasks.js";
 import { SecretBox } from "./storage/secrets.js";
 import { SettingsStore } from "./storage/settings.js";
 import { createWebServer } from "./web/server.js";
+import { readRuntimeSettings } from "./domain/settings.js";
 
 const config = loadConfig();
 fs.mkdirSync(config.configDir, { recursive: true });
@@ -24,10 +25,21 @@ const conversations = new ConversationStore(db);
 const toolAgentTasks = new ToolAgentTaskStore(db);
 const piAuth = new PiAuthService(config);
 const agent = new PiAgentService(config, settings, logger);
-const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles) => agent.runToolAgentTask(task, roles), logger);
+const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal) => agent.runToolAgentTask(task, roles, signal), logger);
 agent.setToolAgentQueue(toolAgentQueue);
 toolAgentQueue.recover();
 const discord = new DiscordBotService(settings, conversations, agent, logger);
+
+const pruneConversations = () => {
+  try {
+    conversations.prune(readRuntimeSettings(settings).memory.ttlHours);
+  } catch (error) {
+    logger.warn({ err: error }, "Failed to prune expired conversation memory");
+  }
+};
+pruneConversations();
+const conversationPruneTimer = setInterval(pruneConversations, 15 * 60 * 1000);
+conversationPruneTimer.unref();
 
 await discord.start();
 
@@ -38,8 +50,9 @@ logger.info({ host: config.httpHost, port: config.httpPort, configDir: config.co
 
 async function shutdown(signal: string) {
   logger.info({ signal }, "Shutting down");
+  clearInterval(conversationPruneTimer);
   await discord.stop();
-  await web.close();
+  await Promise.all([web.close(), agent.shutdown(), toolAgentQueue.shutdown()]);
   db.close();
   process.exit(0);
 }

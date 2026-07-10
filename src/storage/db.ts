@@ -47,6 +47,22 @@ function migrate(db: AppDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_conversation_messages_key_created
       ON conversation_messages (conversation_key, created_at);
 
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_created
+      ON conversation_messages (created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_message_id
+      ON conversation_messages (message_id);
+
+    CREATE TABLE IF NOT EXISTS processed_discord_messages (
+      message_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    );
+
+    INSERT OR IGNORE INTO processed_discord_messages (message_id, created_at)
+      SELECT message_id, created_at
+      FROM conversation_messages
+      WHERE message_id IS NOT NULL;
+
     CREATE TABLE IF NOT EXISTS tool_agent_tasks (
       id TEXT PRIMARY KEY,
       parent_task_id TEXT,

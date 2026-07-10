@@ -3,11 +3,13 @@ import type { Message } from "discord.js";
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
-import type { ConversationStore } from "../storage/conversation.js";
+import type { ConversationMessage, ConversationStore } from "../storage/conversation.js";
 import type { PiAgentService } from "../agent/pi-agent.js";
 
 export class DiscordBotService {
   private client: Client | undefined;
+  private readonly conversationQueue = new KeyedSerialQueue();
+  private readonly processingMessageIds = new Set<string>();
 
   constructor(
     private readonly store: SettingsStore,
@@ -70,60 +72,92 @@ export class DiscordBotService {
         return;
       }
 
+      if (this.processingMessageIds.has(message.id)) {
+        this.logger.debug({ messageId: message.id }, "Ignoring duplicate in-flight Discord message");
+        return;
+      }
+
+      const conversationKey = getConversationKey({
+        guildId: message.guildId,
+        channelId: message.channelId,
+        userId: message.author.id,
+        scope: latest.memory.scope,
+      });
+      const botUserId = client.user.id;
+      this.processingMessageIds.add(message.id);
+
       await reactions.set(selectInitialReaction(content));
       const typing = startTypingRefresh(message, this.logger);
       const progress = startReactionProgress(reactions, content);
 
       try {
-        const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
-        const conversationKey = getConversationKey({
-          guildId: message.guildId,
-          channelId: message.channelId,
-          userId: message.author.id,
-          scope: latest.memory.scope,
-        });
-        const recentMessages = latest.memory.enabled
-          ? this.conversations.getRecent(conversationKey, latest.memory.maxMessages, latest.memory.ttlHours)
-          : [];
-        const response = await this.agent.runDiscordRequest(content, {
-          guildId: message.guildId ?? undefined,
-          channelId: message.channelId,
-          userId: message.author.id,
-          roles,
-          conversationKey,
-          sourceMessageId: message.id,
-          recentMessages,
-        });
-
-        if (latest.memory.enabled) {
-          this.conversations.prune(latest.memory.ttlHours);
-          this.conversations.addMessage({
-            conversationKey,
-            role: "user",
-            userId: message.author.id,
-            messageId: message.id,
-            content,
-            createdAt: message.createdAt,
-          });
-          if (latest.memory.includeBotReplies) {
-            this.conversations.addMessage({
-              conversationKey,
-              role: "assistant",
-              userId: client.user.id,
-              content: response,
-            });
+        await this.conversationQueue.run(conversationKey, async () => {
+          try {
+            if (this.conversations.hasMessageId(message.id)) {
+              this.logger.debug({ messageId: message.id }, "Ignoring previously processed Discord message");
+              return;
+            }
+          } catch (error) {
+            this.logger.warn({ err: error, messageId: message.id }, "Failed to check conversation memory for a duplicate message");
           }
-        }
 
-        progress.stop();
-        await message.reply(truncateDiscord(response));
-        await reactions.set("✅");
+          const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
+          let recentMessages: ConversationMessage[] = [];
+          if (latest.memory.enabled && latest.memory.maxMessages > 0) {
+            try {
+              recentMessages = this.conversations.getRecent(
+                conversationKey,
+                latest.memory.maxMessages,
+                latest.memory.ttlHours,
+                latest.memory.includeBotReplies,
+              );
+            } catch (error) {
+              this.logger.warn({ err: error, conversationKey }, "Failed to read conversation memory; continuing without it");
+            }
+          }
+
+          const response = await this.agent.runDiscordRequest(content, {
+            guildId: message.guildId ?? undefined,
+            channelId: message.channelId,
+            userId: message.author.id,
+            roles,
+            conversationKey,
+            sourceMessageId: message.id,
+            recentMessages,
+          });
+          const deliveredResponse = truncateDiscord(response);
+
+          progress.stop();
+          await message.reply({ content: deliveredResponse, allowedMentions: { parse: [], repliedUser: false } });
+
+          try {
+            const persistenceSettings = readRuntimeSettings(this.store).memory;
+            if (persistenceSettings.enabled && persistenceSettings.maxMessages > 0) {
+              this.conversations.addExchange({
+                conversationKey,
+                userId: message.author.id,
+                userMessageId: message.id,
+                userContent: content,
+                userCreatedAt: message.createdAt,
+                assistantUserId: botUserId,
+                assistantContent: persistenceSettings.includeBotReplies ? deliveredResponse : undefined,
+              });
+            } else {
+              this.conversations.recordProcessedMessage(message.id);
+            }
+          } catch (error) {
+            this.logger.warn({ err: error, messageId: message.id, conversationKey }, "Failed to persist delivered conversation response");
+          }
+
+          await reactions.set("✅");
+        });
       } catch (error) {
         progress.stop();
         this.logger.error({ err: error }, "Failed to process Discord message");
-        await message.reply(`I hit an error while processing that request: ${error instanceof Error ? error.message : String(error)}`);
+        await message.reply({ content: "I couldn't complete that request. Please try again shortly.", allowedMentions: { parse: [], repliedUser: false } });
         await reactions.set("❌");
       } finally {
+        this.processingMessageIds.delete(message.id);
         typing.stop();
         progress.stop();
       }
@@ -162,6 +196,24 @@ export class DiscordBotService {
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to register Discord health command");
     }
+  }
+}
+
+export class KeyedSerialQueue {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    const result = previous.then(task, task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tails.set(key, tail);
+    void tail.then(() => {
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    });
+    return result;
   }
 }
 

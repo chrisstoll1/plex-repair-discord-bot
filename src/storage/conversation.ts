@@ -39,6 +39,47 @@ type ConversationSessionRow = {
 export class ConversationStore {
   constructor(private readonly db: AppDatabase) {}
 
+  addExchange(params: {
+    conversationKey: string;
+    userId: string;
+    userMessageId: string;
+    userContent: string;
+    userCreatedAt: Date;
+    assistantUserId?: string;
+    assistantContent?: string;
+  }): void {
+    const insert = this.db.prepare(
+      `INSERT INTO conversation_messages (conversation_key, role, user_id, message_id, content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const userContent = params.userContent.trim();
+    const assistantContent = params.assistantContent?.trim();
+
+    this.db.transaction(() => {
+      this.recordProcessedMessage(params.userMessageId);
+      if (userContent) {
+        insert.run(
+          params.conversationKey,
+          "user",
+          params.userId,
+          params.userMessageId,
+          userContent.slice(0, 4000),
+          params.userCreatedAt.toISOString(),
+        );
+      }
+      if (assistantContent) {
+        insert.run(
+          params.conversationKey,
+          "assistant",
+          params.assistantUserId ?? null,
+          null,
+          assistantContent.slice(0, 4000),
+          new Date().toISOString(),
+        );
+      }
+    })();
+  }
+
   addMessage(params: {
     conversationKey: string;
     role: ConversationRole;
@@ -65,7 +106,7 @@ export class ConversationStore {
       );
   }
 
-  getRecent(conversationKey: string, maxMessages: number, ttlHours: number): ConversationMessage[] {
+  getRecent(conversationKey: string, maxMessages: number, ttlHours: number, includeBotReplies = true): ConversationMessage[] {
     if (maxMessages <= 0) return [];
 
     const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
@@ -73,11 +114,11 @@ export class ConversationStore {
       .prepare(
         `SELECT role, user_id, message_id, content, created_at
          FROM conversation_messages
-         WHERE conversation_key = ? AND created_at >= ?
+         WHERE conversation_key = ? AND created_at >= ? AND (? = 1 OR role <> 'assistant')
          ORDER BY created_at DESC, id DESC
          LIMIT ?`,
       )
-      .all(conversationKey, cutoff, maxMessages) as ConversationMessageRow[];
+      .all(conversationKey, cutoff, includeBotReplies ? 1 : 0, maxMessages) as ConversationMessageRow[];
 
     return rows.reverse().map((row) => ({
       role: row.role,
@@ -88,35 +129,50 @@ export class ConversationStore {
     }));
   }
 
+  hasMessageId(messageId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM processed_discord_messages WHERE message_id = ?").get(messageId) !== undefined;
+  }
+
+  recordProcessedMessage(messageId: string): void {
+    this.db
+      .prepare("INSERT INTO processed_discord_messages (message_id, created_at) VALUES (?, ?)")
+      .run(messageId, new Date().toISOString());
+  }
+
   prune(ttlHours: number): void {
     const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
-    this.db.prepare("DELETE FROM conversation_messages WHERE created_at < ?").run(cutoff);
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM conversation_messages WHERE created_at < ?").run(cutoff);
+      this.db.prepare("DELETE FROM processed_discord_messages WHERE created_at < ?").run(cutoff);
+    })();
   }
 
   listSessions(ttlHours: number): ConversationSession[] {
     const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
     const rows = this.db
       .prepare(
-        `SELECT
-           session.conversation_key,
-           session.message_count,
-           session.first_message_at,
-           session.last_message_at,
-           latest.role AS latest_role,
-           latest.content AS latest_content
-         FROM (
+        `WITH ranked AS (
            SELECT
              conversation_key,
-             COUNT(*) AS message_count,
-             MIN(created_at) AS first_message_at,
-             MAX(created_at) AS last_message_at,
-             MAX(id) AS latest_id
+             role,
+             content,
+             COUNT(*) OVER (PARTITION BY conversation_key) AS message_count,
+             MIN(created_at) OVER (PARTITION BY conversation_key) AS first_message_at,
+             MAX(created_at) OVER (PARTITION BY conversation_key) AS last_message_at,
+             ROW_NUMBER() OVER (PARTITION BY conversation_key ORDER BY created_at DESC, id DESC) AS row_number
            FROM conversation_messages
            WHERE created_at >= ?
-           GROUP BY conversation_key
-         ) session
-         JOIN conversation_messages latest ON latest.id = session.latest_id
-         ORDER BY session.last_message_at DESC`,
+         )
+         SELECT
+           conversation_key,
+           message_count,
+           first_message_at,
+           last_message_at,
+           role AS latest_role,
+           content AS latest_content
+         FROM ranked
+         WHERE row_number = 1
+         ORDER BY last_message_at DESC`,
       )
       .all(cutoff) as ConversationSessionRow[];
 

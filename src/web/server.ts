@@ -183,7 +183,7 @@ export async function createWebServer(
     const existing = toolAgentQueue.get(params.id);
     if (!existing) return sendError(reply, 404, "task_not_found", "Task was not found.");
     if (isTerminal(existing)) return sendError(reply, 409, "task_not_cancellable", `Task is already ${existing.status}.`);
-    const task = toolAgentQueue.cancel(params.id);
+    const task = await toolAgentQueue.cancel(params.id);
     if (!task) return sendError(reply, 404, "task_not_found", "Task was not found.");
     if (task.status !== "cancelled") return sendError(reply, 409, "task_not_cancellable", `Task is already ${task.status}.`);
     return { task };

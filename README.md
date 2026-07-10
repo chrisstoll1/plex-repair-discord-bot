@@ -4,7 +4,7 @@
 
 # Plex Repairman
 
-Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media apps, explain what it found, and run approved repair actions.
+Plex Repairman is a Discord bot for diagnosing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media apps, explain what it found, and recommend the next repair step.
 
 It is built for common home media-server workflows like missing movies, missing episodes, wrong anime audio language, replacement searches, and checking whether Plex/Sonarr/Radarr agree about what is available.
 
@@ -17,34 +17,29 @@ It is built for common home media-server workflows like missing movies, missing 
 - Plex, Sonarr, and Radarr connection settings stored in encrypted SQLite-backed config.
 - Radarr-first handling for movie, film, theatrical, and multi-language movie requests.
 - Sonarr-first handling for series, seasons, episodes, specials, anime seasons, and OVAs.
-- Manual Radarr movie searches.
-- Manual Sonarr series, season, and episode searches.
-- Release listing and explicit release grabs for Radarr and Sonarr.
-- File-level replacement workflows for bad audio or wrong-language files.
-- Delete a specific Sonarr episode file without removing the whole series.
-- Delete a specific Radarr movie file without removing the movie from Radarr.
-- Monitoring updates for Radarr movies, Sonarr series, and Sonarr seasons.
-- Repair policy controls for confirmation prompts and destructive actions.
-- Repair role restrictions for limiting who can run repair actions.
+- Read-only Radarr movie, queue, history, file, and release inspection.
+- Read-only Sonarr series, season, episode, queue, history, file, and release inspection.
+- Plex library and service health inspection.
+- Manual import and rename previews without applying changes.
 - Configurable conversation memory for follow-up messages in channels, threads, and DMs.
 - Configurable status reactions and refreshed typing indicators while requests are running.
 - OpenAI Codex device-code auth through Pi Coding Agent.
 
 ## How It Works
 
-Plex Repairman gives the AI agent a focused set of media-management tools. The bot can inspect Plex, Sonarr, and Radarr before answering, then use repair tools only when policy allows it.
+Plex Repairman gives focused read-only tools to separate Sonarr, Radarr, Plex, and cross-service workers. A coordinator assigns inspection tasks and combines their findings into one response.
+
+Current worker profiles are intentionally read-only. The codebase contains repair-tool implementations and policy settings, but they are not exposed to the active coordinator/worker path. Safe write execution requires a server-owned, action-specific confirmation workflow before those tools can be enabled.
 
 For example, if you ask for a replacement anime episode because the audio is wrong, the bot can:
 
 1. Find the Sonarr series.
 2. Resolve the exact season and episode.
 3. Inspect the current episode file.
-4. Ask for confirmation if a delete/search/grab action is required.
-5. Delete only the bad episode file if destructive repairs are enabled.
-6. Trigger an episode search or inspect available releases.
-7. Grab a selected replacement release.
+4. Inspect available releases and relevant queue or history entries.
+5. Explain the evidence and recommend the specific replacement or repair action.
 
-For movies, it follows the same pattern through Radarr and works at the movie-file level when replacing a bad file.
+For movies, it follows the same diagnostic pattern through Radarr and reports movie-file-level findings.
 
 ## Docker Install
 
@@ -280,24 +275,23 @@ Memory is used only as prompt context. The app still creates a fresh AI session 
 
 ## Repair Policy
 
-Repair settings are configured on the `Bot Settings` page.
+Repair settings are configured on the `Bot Settings` page, but active worker profiles are currently read-only. These settings are retained for the future confirmed-action executor and do not make write tools reachable today.
 
-`Require confirmation for repair actions` controls whether the bot must ask before actions such as searches, grabs, monitoring changes, and deletes.
+`Require confirmation for repair actions` will require an explicit, action-specific confirmation before a future executor can make changes.
 
-`Allow destructive repair actions` controls whether destructive tools can run. Destructive actions include deleting a Sonarr episode file, deleting a Radarr movie file, removing a Sonarr series, or removing a Radarr movie.
+`Allow destructive repair actions` will control file and media removal. It should remain disabled until server-owned confirmation and execution are implemented.
 
 Recommended defaults:
 
 - Keep confirmation required.
-- Keep destructive actions disabled until you are comfortable with the workflow.
-- Configure repair role IDs so only trusted Discord roles can run repair tools.
+- Keep destructive actions disabled.
+- Configure repair role IDs before write execution is introduced.
 
 Important behavior:
 
 - Read-only checks are allowed without confirmation.
-- File replacement should delete only the specific bad episode file or movie file.
-- Whole-series or whole-movie removal is separate and should not be used for a single bad file.
-- The bot must not claim an action was performed unless a tool result confirms it.
+- The bot recommends repair steps but does not currently execute them.
+- Enabling write tools directly in a worker profile is not supported or safe.
 
 ## OpenAI Codex Auth
 
