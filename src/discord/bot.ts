@@ -127,7 +127,7 @@ export class DiscordBotService {
             onProgress: async (update) => {
               if (update.type !== "tasks_started") return;
               await message.reply({
-                content: formatAgentProgress(update.titles),
+                content: formatAgentProgress(update.titles, update.message),
                 allowedMentions: { parse: [], repliedUser: false },
               });
             },
@@ -238,11 +238,21 @@ function truncateDiscord(value: string): string {
   return `${value.slice(0, 1880)}\n...`;
 }
 
-export function formatAgentProgress(titles: string[]): string {
+export function formatAgentProgress(titles: string[], message?: string): string {
   const normalized = titles
     .map((title) => title.replace(/\s+/g, " ").trim().slice(0, 120))
     .filter(Boolean);
   const shown = normalized.slice(0, 3);
+  const normalizedMessage = message?.replace(/\s+/g, " ").trim().slice(0, 180);
+  if (normalizedMessage) {
+    if (shown.length === 0) return normalizedMessage;
+
+    const remaining = normalized.length - shown.length;
+    const lines = shown.map((title) => `- ${title}`);
+    if (remaining > 0) lines.push(`- ${remaining} other check${remaining === 1 ? "" : "s"}`);
+    return `${normalizedMessage}\n\n${lines.join("\n")}`;
+  }
+
   if (shown.length === 0) return "I'm checking that now. I'll follow up when it's finished.";
 
   const remaining = normalized.length - shown.length;

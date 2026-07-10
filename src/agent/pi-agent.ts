@@ -36,6 +36,7 @@ export type AgentRequestContext = {
 export type AgentProgressUpdate = {
   type: "tasks_started";
   titles: string[];
+  message?: string;
 };
 
 type AgentSessionParams = {
@@ -46,7 +47,7 @@ type AgentSessionParams = {
   signal?: AbortSignal;
 };
 
-type StartToolAgentParams = {
+type ToolAgentTaskParams = {
   title: string;
   toolProfile: ToolProfile;
   prompt: string;
@@ -54,12 +55,17 @@ type StartToolAgentParams = {
   parentTaskId?: string;
 };
 
+type StartToolAgentParams = ToolAgentTaskParams & {
+  progressMessage: string;
+};
+
 const MAX_COORDINATORS = 6;
 const MAX_COORDINATORS_PER_USER = 2;
 const MAX_COORDINATOR_RUNTIME_MS = 12 * 60 * 1000;
 
 type StartManyToolAgentsParams = {
-  tasks: StartToolAgentParams[];
+  progressMessage: string;
+  tasks: ToolAgentTaskParams[];
 };
 
 type RadarrMovieSettingsParams = {
@@ -306,22 +312,27 @@ export class PiAgentService {
     };
     const availableProfiles = this.availableToolProfiles(context);
     let progressSent = false;
-    const reportTasksStarted = async (titles: string[]) => {
+    const reportTasksStarted = async (titles: string[], message: string) => {
       if (progressSent || !context.onProgress) return;
       progressSent = true;
       try {
-        await context.onProgress({ type: "tasks_started", titles });
+        await context.onProgress({ type: "tasks_started", titles, message });
       } catch (error) {
         this.logger?.warn({ err: error }, "Failed to send agent progress update");
       }
     };
     const profileSchema = Type.Union(availableProfiles.map((profile) => Type.Literal(profile)) as [ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ...ReturnType<typeof Type.Literal>[]]);
-    const taskSchema = Type.Object({
+    const taskProperties = {
       title: Type.String({ description: "Short task title" }),
       toolProfile: profileSchema,
       prompt: Type.String({ description: "Specific scoped task for the tool agent" }),
       input: Type.Optional(Type.Any({ description: "Optional structured task input" })),
       parentTaskId: Type.Optional(Type.String({ description: "Optional parent tool-agent task ID" })),
+    };
+    const taskSchema = Type.Object(taskProperties);
+    const progressMessageSchema = Type.String({
+      description: "A natural, context-specific Discord acknowledgement that says what is starting and that you will follow up. Use one or two short sentences, without bullets or implementation details.",
+      maxLength: 180,
     });
 
     return [
@@ -329,11 +340,11 @@ export class PiAgentService {
         name: "start_tool_agent",
         label: "Start tool agent",
         description: "Run one focused diagnostic or repair task using an available profile. Repair profiles are exposed only when server policy permits direct execution.",
-        parameters: taskSchema,
+        parameters: Type.Object({ ...taskProperties, progressMessage: progressMessageSchema }),
         execute: async (_toolCallId, params: StartToolAgentParams) => {
           this.assertToolProfileAllowed(params.toolProfile, context);
           const task = queue().enqueue(this.toToolAgentTaskRequest(params, context));
-          await reportTasksStarted([params.title]);
+          await reportTasksStarted([params.title], params.progressMessage);
           return toolResponse(summarizeTask(await queue().waitForTask(task.id)));
         },
       }),
@@ -341,11 +352,14 @@ export class PiAgentService {
         name: "start_many_tool_agents",
         label: "Start many tool agents",
         description: "Run one to eight independent diagnostic or repair tasks in parallel and wait for all results.",
-        parameters: Type.Object({ tasks: Type.Array(taskSchema, { minItems: 1, maxItems: 8, description: "One to eight independent tool-agent tasks to run" }) }),
+        parameters: Type.Object({
+          progressMessage: progressMessageSchema,
+          tasks: Type.Array(taskSchema, { minItems: 1, maxItems: 8, description: "One to eight independent tool-agent tasks to run" }),
+        }),
         execute: async (_toolCallId, params: StartManyToolAgentsParams) => {
           for (const task of params.tasks) this.assertToolProfileAllowed(task.toolProfile, context);
           const tasks = queue().enqueueMany(params.tasks.map((task) => this.toToolAgentTaskRequest(task, context)));
-          await reportTasksStarted(params.tasks.map((task) => task.title));
+          await reportTasksStarted(params.tasks.map((task) => task.title), params.progressMessage);
           const completed = await Promise.all(tasks.map((task) => queue().waitForTask(task.id)));
           return toolResponse(completed.map(summarizeTask));
         },
@@ -403,9 +417,13 @@ export class PiAgentService {
     }
   }
 
-  private toToolAgentTaskRequest(params: StartToolAgentParams, context: AgentRequestContext): ToolAgentTaskRequest {
+  private toToolAgentTaskRequest(params: ToolAgentTaskParams, context: AgentRequestContext): ToolAgentTaskRequest {
     return {
-      ...params,
+      title: params.title,
+      toolProfile: params.toolProfile,
+      prompt: params.prompt,
+      input: params.input,
+      parentTaskId: params.parentTaskId,
       channelId: context.channelId,
       userId: context.userId,
       guildId: context.guildId,

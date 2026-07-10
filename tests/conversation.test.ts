@@ -97,4 +97,14 @@ test("agent progress is concise, normalized, and limits task details", () => {
     "I'm checking:\n- Check Sonarr for Wild Kratts\n- Compare Plex library\n- Inspect queue\n- 1 other check\n\nI'll follow up when it's finished.",
   );
   assert.equal(formatAgentProgress([]), "I'm checking that now. I'll follow up when it's finished.");
+  assert.equal(
+    formatAgentProgress(
+      ["  Check   Sonarr for Wild Kratts ", "Compare Plex library", "Inspect queue", "Review history"],
+      "  I'm tracing   the episode through Plex and Sonarr.\nI'll report back shortly.  ",
+    ),
+    "I'm tracing the episode through Plex and Sonarr. I'll report back shortly.\n\n- Check Sonarr for Wild Kratts\n- Compare Plex library\n- Inspect queue\n- 1 other check",
+  );
+  assert.equal(formatAgentProgress([], "  Looking into it now.  "), "Looking into it now.");
+  assert.equal(formatAgentProgress([], "   "), "I'm checking that now. I'll follow up when it's finished.");
+  assert.equal(formatAgentProgress([], "x".repeat(200)), "x".repeat(180));
 });
