@@ -2,7 +2,6 @@ export type ToolProfile =
   | "sonarr_agent"
   | "radarr_agent"
   | "plex_agent"
-  | "media_readonly_agent"
   | "sonarr_repair_agent"
   | "radarr_repair_agent"
   | "plex_repair_agent";
@@ -72,7 +71,6 @@ export const TOOL_PROFILES: Record<ToolProfile, readonly string[]> = {
   sonarr_agent: SONARR_READ_TOOLS,
   radarr_agent: RADARR_READ_TOOLS,
   plex_agent: PLEX_READ_TOOLS,
-  media_readonly_agent: [...SONARR_READ_TOOLS, ...RADARR_READ_TOOLS, ...PLEX_READ_TOOLS],
   sonarr_repair_agent: [...SONARR_READ_TOOLS, ...SONARR_WRITE_TOOLS],
   radarr_repair_agent: [...RADARR_READ_TOOLS, ...RADARR_WRITE_TOOLS],
   plex_repair_agent: [...PLEX_READ_TOOLS, ...PLEX_WRITE_TOOLS],

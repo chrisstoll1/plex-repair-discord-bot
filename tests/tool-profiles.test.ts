@@ -28,7 +28,7 @@ const WRITE_TOOLS = new Set([
 ]);
 
 test("read-only profiles contain no repair tools", () => {
-  for (const profile of ["sonarr_agent", "radarr_agent", "plex_agent", "media_readonly_agent"] as const) {
+  for (const profile of ["sonarr_agent", "radarr_agent", "plex_agent"] as const) {
     assert.equal(TOOL_PROFILES[profile].some((tool) => WRITE_TOOLS.has(tool)), false, profile);
     assert.equal(isRepairToolProfile(profile), false);
   }

@@ -155,7 +155,7 @@ function createStore() {
 function request(title: string): ToolAgentTaskRequest {
   return {
     title,
-    toolProfile: "media_readonly_agent",
+    toolProfile: "sonarr_agent",
     prompt: title,
     conversationKey: "conversation",
     channelId: "channel",
@@ -168,7 +168,7 @@ function taskParams(id: string, conversationKey: string, userId: string, input?:
   return {
     id,
     title: id,
-    toolProfile: "media_readonly_agent",
+    toolProfile: "sonarr_agent",
     prompt: id,
     conversationKey,
     channelId: "channel",
