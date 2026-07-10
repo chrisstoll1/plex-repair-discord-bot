@@ -124,6 +124,13 @@ export class DiscordBotService {
             conversationKey,
             sourceMessageId: message.id,
             recentMessages,
+            onProgress: async (update) => {
+              if (update.type !== "tasks_started") return;
+              await message.reply({
+                content: formatAgentProgress(update.titles),
+                allowedMentions: { parse: [], repliedUser: false },
+              });
+            },
           });
           const deliveredResponse = truncateDiscord(response);
 
@@ -229,6 +236,19 @@ function isAllowed(value: string | null, allowed: Set<string>): boolean {
 function truncateDiscord(value: string): string {
   if (value.length <= 1900) return value;
   return `${value.slice(0, 1880)}\n...`;
+}
+
+export function formatAgentProgress(titles: string[]): string {
+  const normalized = titles
+    .map((title) => title.replace(/\s+/g, " ").trim().slice(0, 120))
+    .filter(Boolean);
+  const shown = normalized.slice(0, 3);
+  if (shown.length === 0) return "I'm checking that now. I'll follow up when it's finished.";
+
+  const remaining = normalized.length - shown.length;
+  const lines = shown.map((title) => `- ${title}`);
+  if (remaining > 0) lines.push(`- ${remaining} other check${remaining === 1 ? "" : "s"}`);
+  return `I'm checking:\n${lines.join("\n")}\n\nI'll follow up when it's finished.`;
 }
 
 class MessageReactionTracker {

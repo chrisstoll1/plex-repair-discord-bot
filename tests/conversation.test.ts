@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../src/config.js";
-import { KeyedSerialQueue } from "../src/discord/bot.js";
+import { KeyedSerialQueue, formatAgentProgress } from "../src/discord/bot.js";
 import { ConversationStore } from "../src/storage/conversation.js";
 import { openDatabase } from "../src/storage/db.js";
 
@@ -89,4 +89,12 @@ test("KeyedSerialQueue serializes matching keys while allowing other keys to run
   releaseFirst?.();
   await Promise.all([first, second]);
   assert.deepEqual(events, ["first:start", "other", "first:end", "second"]);
+});
+
+test("agent progress is concise, normalized, and limits task details", () => {
+  assert.equal(
+    formatAgentProgress(["  Check   Sonarr for Wild Kratts ", "Compare Plex library", "Inspect queue", "Review history"]),
+    "I'm checking:\n- Check Sonarr for Wild Kratts\n- Compare Plex library\n- Inspect queue\n- 1 other check\n\nI'll follow up when it's finished.",
+  );
+  assert.equal(formatAgentProgress([]), "I'm checking that now. I'll follow up when it's finished.");
 });
