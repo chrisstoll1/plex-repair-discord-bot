@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
@@ -19,6 +20,8 @@ import type { ToolAgentQueueService } from "../agent/tool-agent-queue.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { DiscordBotService } from "../discord/bot.js";
 import type { PiAuthService, PiAuthSnapshot } from "../agent/pi-auth.js";
+import type { RepairCaseService } from "../agent/repair-case-service.js";
+import type { RepairCase, RepairCaseActivity, RepairCaseStore } from "../storage/repair-cases.js";
 
 const nonEmptyTrimmedString = z.string().trim().min(1);
 const optionalUrl = z.union([z.literal(""), z.string().trim().url()]);
@@ -73,6 +76,13 @@ const settingsUpdateSchema = z
 const deleteSessionSchema = z.object({ conversationKey: nonEmptyTrimmedString }).strict();
 const taskParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
 const taskQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict();
+const repairParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
+const webhookParamsSchema = z.object({ provider: z.enum(["sonarr", "radarr"]), secret: nonEmptyTrimmedString }).strict();
+const webhookConfigSchema = z.object({
+  publicBaseUrl: optionalUrl,
+  sonarrEnabled: z.boolean(),
+  radarrEnabled: z.boolean(),
+}).strict();
 
 type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
 type SecretUpdate = z.infer<typeof secretUpdateSchema>;
@@ -91,6 +101,8 @@ export async function createWebServer(
   piAuth: PiAuthService,
   logger: Logger,
   webRoot = path.resolve(process.cwd(), "dist/web/public"),
+  repairCases?: RepairCaseStore,
+  repairCaseService?: RepairCaseService,
 ) {
   const app = Fastify({ loggerInstance: logger });
 
@@ -193,6 +205,65 @@ export async function createWebServer(
     return { task };
   });
 
+  app.get("/api/repairs", async () => ({ repairs: repairCases?.list({ limit: 500 }).map((repairCase) => publicRepairCase(repairCase, repairCases)) ?? [] }));
+
+  app.get("/api/repairs/:id/activity", async (request, reply) => {
+    const params = parseOrReply(repairParamsSchema, request.params, reply);
+    if (!params) return;
+    if (!repairCases?.get(params.id)) return sendError(reply, 404, "repair_not_found", "Repair was not found.");
+    return { activity: repairCases.listActivity(params.id).map(publicRepairActivity) };
+  });
+
+  app.post("/api/repairs/:id/cancel", async (request, reply) => {
+    const params = parseOrReply(repairParamsSchema, request.params, reply);
+    if (!params) return;
+    const repair = repairCaseService?.cancel(params.id, "admin");
+    if (!repair) return sendError(reply, 404, "repair_not_found", "Repair was not found.");
+    return { repair: publicRepairCase(repair, repairCases!) };
+  });
+
+  app.post("/api/repairs/:id/resume", async (request, reply) => {
+    const params = parseOrReply(repairParamsSchema, request.params, reply);
+    if (!params) return;
+    const repair = repairCaseService?.resume(params.id, "admin");
+    if (!repair) return sendError(reply, 409, "repair_not_resumable", "Repair cannot be resumed from its current state.");
+    return { repair: publicRepairCase(repair, repairCases!) };
+  });
+
+  app.get("/api/webhooks/config", async () => publicWebhookConfig(store));
+  app.put("/api/webhooks/config", async (request, reply) => {
+    const config = parseOrReply(webhookConfigSchema, request.body, reply);
+    if (!config) return;
+    const sonarrWasEnabled = store.getString("webhooks.sonarr.enabled") === "true";
+    const radarrWasEnabled = store.getString("webhooks.radarr.enabled") === "true";
+    store.setString("webhooks.publicBaseUrl", config.publicBaseUrl);
+    store.setString("webhooks.sonarr.enabled", String(config.sonarrEnabled));
+    store.setString("webhooks.radarr.enabled", String(config.radarrEnabled));
+    const fallbackAt = new Date(Date.now() + 15 * 60_000);
+    if (sonarrWasEnabled && !config.sonarrEnabled) repairCases?.replaceProviderWakesWithTimers("sonarr", fallbackAt);
+    if (radarrWasEnabled && !config.radarrEnabled) repairCases?.replaceProviderWakesWithTimers("radarr", fallbackAt);
+    repairCaseService?.refreshScheduling();
+    ensureWebhookSecret(store);
+    return publicWebhookConfig(store);
+  });
+  app.post("/api/webhooks/rotate-secret", async () => {
+    store.setString("webhooks.secret", crypto.randomBytes(24).toString("base64url"), { secret: true });
+    return publicWebhookConfig(store);
+  });
+
+  app.post("/webhooks/:provider/:secret", async (request, reply) => {
+    const params = parseOrReply(webhookParamsSchema, request.params, reply);
+    if (!params) return;
+    const expected = store.getString("webhooks.secret");
+    if (!expected || !safeEqual(params.secret, expected)) return sendError(reply, 401, "invalid_webhook_secret", "Webhook authentication failed.");
+    if (store.getString(`webhooks.${params.provider}.enabled`) !== "true") return sendError(reply, 409, "webhook_disabled", "This webhook integration is disabled.");
+    if (!repairCaseService) return sendError(reply, 503, "repair_service_unavailable", "Repair service is unavailable.");
+    const event = normalizeArrWebhook(params.provider, request.body);
+    store.setString(`webhooks.${params.provider}.lastReceivedAt`, new Date().toISOString());
+    const result = repairCaseService.receiveEvent(event);
+    return reply.status(202).send({ accepted: true, duplicate: result.duplicate, matched: result.matchedCaseIds.length });
+  });
+
   app.get("/api/pi-auth", async () => ({ piAuth: publicPiAuth(await piAuth.refreshExpiredCredential()) }));
   app.post("/api/pi-auth/start", async () => ({ piAuth: publicPiAuth(await piAuth.startLoginAndWaitForDeviceCode()) }));
   app.post("/api/pi-auth/cancel", async () => ({ piAuth: publicPiAuth(piAuth.cancelLogin()) }));
@@ -206,6 +277,91 @@ export async function createWebServer(
   });
 
   return app;
+}
+
+function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
+  const activity = store.listActivity(repairCase.id);
+  const latest = [...activity].reverse().find((entry) => entry.kind === "progress" || entry.kind === "waiting" || entry.kind === "resolved" || entry.kind === "needs_input" || entry.kind === "blocked" || entry.kind === "user_update");
+  const details = latest?.details && typeof latest.details === "object" ? latest.details as { message?: string; userUpdate?: string } : {};
+  const latestText = typeof latest?.details === "string" ? latest.details : details.userUpdate ?? details.message;
+  const wake = store.getWake(repairCase.id);
+  return {
+    id: repairCase.id,
+    status: repairCase.status,
+    title: repairCase.title,
+    latestUpdate: latestText,
+    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : undefined,
+    threadUrl: repairCase.guildId ? `https://discord.com/channels/${repairCase.guildId}/${repairCase.threadId}` : undefined,
+    createdAt: repairCase.createdAt,
+    updatedAt: repairCase.updatedAt,
+    resolvedAt: repairCase.resolvedAt,
+    cancelledAt: repairCase.cancelledAt,
+  };
+}
+
+function publicRepairActivity(activity: RepairCaseActivity) {
+  const details = activity.details && typeof activity.details === "object" ? activity.details as { message?: string; userUpdate?: string; to?: RepairCase["status"] } : {};
+  return { id: String(activity.id), repairId: activity.caseId, type: activity.kind, message: typeof activity.details === "string" ? activity.details : details.userUpdate ?? details.message, status: details.to, details: activity.details, createdAt: activity.createdAt };
+}
+
+function ensureWebhookSecret(store: SettingsStore): string {
+  const existing = store.getString("webhooks.secret");
+  if (existing) return existing;
+  const created = crypto.randomBytes(24).toString("base64url");
+  store.setString("webhooks.secret", created, { secret: true });
+  return created;
+}
+
+function publicWebhookConfig(store: SettingsStore) {
+  const secret = ensureWebhookSecret(store);
+  const base = (store.getString("webhooks.publicBaseUrl") ?? "").replace(/\/$/, "");
+  const endpoint = (provider: "sonarr" | "radarr") => `${base}/webhooks/${provider}/${secret}`;
+  return {
+    publicBaseUrl: base,
+    sonarrEnabled: store.getString("webhooks.sonarr.enabled") === "true",
+    radarrEnabled: store.getString("webhooks.radarr.enabled") === "true",
+    sonarrUrl: base ? endpoint("sonarr") : undefined,
+    radarrUrl: base ? endpoint("radarr") : undefined,
+    sonarrLastReceivedAt: store.getString("webhooks.sonarr.lastReceivedAt"),
+    radarrLastReceivedAt: store.getString("webhooks.radarr.lastReceivedAt"),
+  };
+}
+
+function normalizeArrWebhook(provider: "sonarr" | "radarr", body: unknown) {
+  if (!body || typeof body !== "object") throw Object.assign(new Error("Webhook payload must be a JSON object"), { statusCode: 400 });
+  const payload = body as Record<string, unknown>;
+  const eventType = normalizeEventType(typeof payload.eventType === "string" ? payload.eventType : "unknown");
+  const mediaId = provider === "sonarr" ? sonarrMediaId(payload) : radarrMediaId(payload);
+  const stable = JSON.stringify({ eventType, mediaId, downloadId: payload.downloadId, episodeFile: objectId(payload.episodeFile), movieFile: objectId(payload.movieFile) });
+  const eventId = crypto.createHash("sha256").update(stable).digest("hex");
+  return { provider, eventId, eventType, mediaId, payload };
+}
+
+function sonarrMediaId(payload: Record<string, unknown>): string | undefined {
+  if (Array.isArray(payload.episodes)) {
+    const id = objectId(payload.episodes[0]);
+    if (id !== undefined) return `episode:${id}`;
+  }
+  const seriesId = objectId(payload.series);
+  return seriesId === undefined ? undefined : `series:${seriesId}`;
+}
+
+function radarrMediaId(payload: Record<string, unknown>): string | undefined {
+  const id = objectId(payload.movie);
+  return id === undefined ? undefined : `movie:${id}`;
+}
+
+function objectId(value: unknown): string | number | undefined {
+  if (!value || typeof value !== "object" || !("id" in value)) return undefined;
+  const id = value.id;
+  return typeof id === "string" || typeof id === "number" ? id : undefined;
+}
+
+function normalizeEventType(value: string): string { return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+function safeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function parseOrReply<T>(schema: z.ZodType<T>, value: unknown, reply: FastifyReply): T | undefined {

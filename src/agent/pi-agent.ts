@@ -17,7 +17,7 @@ import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import { createMediaClients } from "../services/service-factory.js";
-import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -31,7 +31,20 @@ export type AgentRequestContext = {
   sourceMessageId?: string;
   recentMessages?: ConversationMessage[];
   onProgress?: (update: AgentProgressUpdate) => Promise<void>;
+  caseControl?: RepairCaseControl;
 };
+
+export type RepairCaseControlResult =
+  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; resumeAt?: string }
+  | { type: "finish"; status: "resolved" | "needs_input" | "blocked"; userUpdate: string; checkpoint: string };
+
+export type RepairCaseControl = {
+  webhookProviders: Array<"sonarr" | "radarr">;
+  history: Array<{ role: string; content: string; userId?: string; createdAt: string }>;
+  setResult: (result: RepairCaseControlResult) => void;
+};
+
+export type RepairCaseAgentResult = { response: string; control?: RepairCaseControlResult };
 
 export type AgentProgressUpdate = {
   type: "tasks_started";
@@ -204,6 +217,47 @@ export class PiAgentService {
     }
   }
 
+  async runRepairCase(params: {
+    objective: string;
+    checkpoint?: unknown;
+    messages: Array<{ role: string; content: string; userId?: string; createdAt: string }>;
+    context: Omit<AgentRequestContext, "recentMessages" | "caseControl">;
+    webhookProviders: Array<"sonarr" | "radarr">;
+    signal?: AbortSignal;
+  }): Promise<RepairCaseAgentResult> {
+    if (!this.queue) throw new Error("Tool-agent queue is not initialized");
+    if (this.stopping) throw new Error("Plex Repairman is shutting down");
+    let control: RepairCaseControlResult | undefined;
+    const context: AgentRequestContext = {
+      ...params.context,
+      caseControl: {
+        webhookProviders: params.webhookProviders,
+        history: params.messages,
+        setResult: (result) => {
+          if (control) throw new Error("A repair-case lifecycle decision was already recorded");
+          control = result;
+        },
+      },
+    };
+    const settings = readRuntimeSettings(this.store);
+    const transcript = formatCaseTranscript(params.messages);
+    const prompt = [
+      `Repair policy: ${JSON.stringify(settings.repair)}`,
+      `Available event integrations: ${params.webhookProviders.length ? params.webhookProviders.join(", ") : "none"}`,
+      `Original objective: ${params.objective}`,
+      params.checkpoint === undefined ? undefined : `Saved checkpoint: ${JSON.stringify(params.checkpoint)}`,
+      `Complete thread transcript:\n${transcript}`,
+    ].filter(Boolean).join("\n\n");
+    const response = await this.runAgentSession({
+      systemPrompt: REPAIR_CASE_INSTRUCTIONS,
+      prompt,
+      tools: this.createOrchestrationTools(context),
+      thinkingLevel: settings.ai.thinkingLevel,
+      signal: params.signal,
+    });
+    return { response, control };
+  }
+
   async shutdown(): Promise<void> {
     this.stopping = true;
     for (const controller of this.coordinatorControllers) controller.abort(new Error("Plex Repairman is shutting down"));
@@ -335,7 +389,7 @@ export class PiAgentService {
       maxLength: 180,
     });
 
-    return [
+    const tools = [
       defineTool({
         name: "start_tool_agent",
         label: "Start tool agent",
@@ -403,6 +457,65 @@ export class PiAgentService {
         },
       }),
     ];
+    if (context.caseControl) {
+      tools.push(
+        defineTool({
+          name: "read_repair_case_history",
+          label: "Read repair case history",
+          description: "Read or search the complete durable thread transcript when older messages are not present in the prompt.",
+          parameters: Type.Object({
+            query: Type.Optional(Type.String({ description: "Optional case-insensitive text search" })),
+            offset: Type.Optional(Type.Number({ description: "Zero-based result offset" })),
+            limit: Type.Optional(Type.Number({ description: "Maximum messages, up to 100" })),
+          }),
+          execute: async (_toolCallId, params: { query?: string; offset?: number; limit?: number }) => {
+            const query = params.query?.trim().toLowerCase();
+            const matching = query ? context.caseControl!.history.filter((message) => message.content.toLowerCase().includes(query)) : context.caseControl!.history;
+            const offset = Math.max(0, Math.floor(params.offset ?? 0));
+            const limit = Math.max(1, Math.min(100, Math.floor(params.limit ?? 50)));
+            return toolResponse({ total: matching.length, offset, messages: matching.slice(offset, offset + limit) });
+          },
+        }),
+        defineTool({
+          name: "wait_for_external_progress",
+          label: "Wait for external progress",
+          description: "Suspend this repair until a covered Sonarr/Radarr event occurs, or until a time when no event integration covers the expected change.",
+          parameters: Type.Object({
+            userUpdate: Type.String({ description: "Short plain-language update for the user explaining what is happening and that work will continue automatically", maxLength: 500 }),
+            checkpoint: Type.String({ description: "Compact internal summary of findings, actions, IDs, expected outcome, and next verification step", maxLength: 6000 }),
+            provider: Type.Optional(Type.Union([Type.Literal("sonarr"), Type.Literal("radarr")])),
+            eventType: Type.Optional(Type.String({ description: "Normalized webhook event type to wait for, such as download or grab" })),
+            mediaId: Type.Optional(Type.String({ description: "Provider-qualified media key such as episode:123, series:45, or movie:67" })),
+            resumeAt: Type.Optional(Type.String({ description: "ISO timestamp for a timed resume. Use only when no available event integration covers the expected change." })),
+          }),
+          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; resumeAt?: string }) => {
+            const eventAvailable = params.provider && context.caseControl!.webhookProviders.includes(params.provider);
+            if (eventAvailable && (!params.eventType || !params.mediaId)) throw new Error("An event wait requires eventType and mediaId");
+            if (!eventAvailable && !params.resumeAt) throw new Error("A timed resumeAt is required when no matching event integration is available");
+            const result: RepairCaseControlResult = eventAvailable
+              ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaId: params.mediaId }
+              : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt };
+            context.caseControl!.setResult(result);
+            return toolResponse({ accepted: true, wake: eventAvailable ? "event" : "time" });
+          },
+        }),
+        defineTool({
+          name: "finish_repair_case",
+          label: "Finish repair case",
+          description: "Finish the current repair as verified resolved, needing user input, or blocked with no automatic path remaining.",
+          parameters: Type.Object({
+            status: Type.Union([Type.Literal("resolved"), Type.Literal("needs_input"), Type.Literal("blocked")]),
+            userUpdate: Type.String({ description: "Plain-language final update for the user", maxLength: 1000 }),
+            checkpoint: Type.String({ description: "Compact internal final findings and actions", maxLength: 6000 }),
+          }),
+          execute: async (_toolCallId, params: { status: "resolved" | "needs_input" | "blocked"; userUpdate: string; checkpoint: string }) => {
+            context.caseControl!.setResult({ type: "finish", ...params });
+            return toolResponse({ accepted: true, status: params.status });
+          },
+        }),
+      );
+    }
+    return tools;
   }
 
   private availableToolProfiles(context: AgentRequestContext): ToolProfile[] {
@@ -1339,6 +1452,28 @@ function toolResponse(results: unknown) {
     content: [{ type: "text" as const, text }],
     details: results,
   };
+}
+
+function normalizeEventType(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function formatCaseTranscript(messages: Array<{ role: string; content: string; userId?: string; createdAt: string }>): string {
+  const format = (message: { role: string; content: string; userId?: string; createdAt: string }) => `[${message.createdAt}] ${message.role}${message.userId ? ` (${message.userId})` : ""}: ${message.content}`;
+  const all = messages.map(format);
+  const maximumCharacters = 60_000;
+  let used = 0;
+  const recent: string[] = [];
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const line = all[index]!;
+    if (recent.length > 0 && used + line.length > maximumCharacters) break;
+    recent.unshift(line);
+    used += line.length;
+  }
+  const omitted = all.length - recent.length;
+  return omitted > 0
+    ? `${omitted} older messages are retained and available through read_repair_case_history.\n\n${recent.join("\n")}`
+    : recent.join("\n");
 }
 
 function taskScope(context: AgentRequestContext) {

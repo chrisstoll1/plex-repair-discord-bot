@@ -1,22 +1,30 @@
-import { Client, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder } from "discord.js";
+import { Client, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ThreadAutoArchiveDuration } from "discord.js";
 import type { Message } from "discord.js";
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ConversationMessage, ConversationStore } from "../storage/conversation.js";
 import type { PiAgentService } from "../agent/pi-agent.js";
+import type { RepairCaseService } from "../agent/repair-case-service.js";
+import type { RepairCase, RepairCaseOutboxItem, RepairCaseStatus, RepairCaseStore } from "../storage/repair-cases.js";
 
 export class DiscordBotService {
   private client: Client | undefined;
   private readonly conversationQueue = new KeyedSerialQueue();
   private readonly processingMessageIds = new Set<string>();
+  private repairCaseService?: RepairCaseService;
 
   constructor(
     private readonly store: SettingsStore,
     private readonly conversations: ConversationStore,
     private readonly agent: PiAgentService,
     private readonly logger: Logger,
+    private readonly repairCases?: RepairCaseStore,
   ) {}
+
+  setRepairCaseService(service: RepairCaseService): void {
+    this.repairCaseService = service;
+  }
 
   async start(): Promise<void> {
     const settings = readRuntimeSettings(this.store);
@@ -48,6 +56,7 @@ export class DiscordBotService {
 
       const latest = readRuntimeSettings(this.store);
       const isDirectMessage = message.guildId === null;
+      const existingCase = this.findActiveCase(message.guildId ?? "", message.channelId);
 
       if (isDirectMessage) {
         if (!latest.discord.allowDirectMessages) {
@@ -55,9 +64,10 @@ export class DiscordBotService {
           return;
         }
       } else {
-        if (!message.mentions.has(client.user)) return;
+        if (!existingCase && !message.mentions.has(client.user)) return;
         if (!isAllowed(message.guildId, csvToSet(latest.discord.allowedGuildIds))) return;
-        if (!isAllowed(message.channelId, csvToSet(latest.discord.allowedChannelIds))) return;
+        const allowedChannelId = message.channel.isThread() ? message.channel.parentId : message.channelId;
+        if (!isAllowed(allowedChannelId, csvToSet(latest.discord.allowedChannelIds))) return;
       }
 
       const content = message.content.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim();
@@ -69,6 +79,12 @@ export class DiscordBotService {
             ? "Tell me what media issue to check, e.g. `why is Dune missing?`"
             : "Tell me what media issue to check, e.g. `@Plex Repairman why is Dune missing?`",
         );
+        return;
+      }
+
+
+      if (this.repairCases && this.repairCaseService) {
+        await this.handleRepairCaseMessage(message, content, existingCase);
         return;
       }
 
@@ -192,6 +208,98 @@ export class DiscordBotService {
     await this.client?.destroy();
   }
 
+  async getMemberRoles(guildId: string, userId: string): Promise<string[]> {
+    if (!guildId || !this.client) return [];
+    const guild = await this.client.guilds.fetch(guildId);
+    const member = await guild.members.fetch(userId);
+    return member.roles.cache.map((role) => role.id);
+  }
+
+  async deliverRepairMessage(delivery: RepairCaseOutboxItem, repairCase: RepairCase): Promise<void> {
+    if (!this.client) throw new Error("Discord is not connected");
+    const payload = delivery.payload;
+    const content = typeof payload === "string"
+      ? payload
+      : payload && typeof payload === "object" && "content" in payload && typeof payload.content === "string"
+        ? payload.content
+        : undefined;
+    if (!content) throw new Error("Repair delivery has no message content");
+    const channel = await this.client.channels.fetch(repairCase.threadId);
+    if (!channel?.isTextBased() || !("send" in channel)) throw new Error("Repair thread is unavailable");
+    if (channel.isThread() && channel.archived && !channel.locked) await channel.setArchived(false, "Repair work resumed");
+    const sent = await channel.send({ content: truncateDiscord(content), allowedMentions: { parse: [] } });
+    this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: truncateDiscord(content), sourceMessageId: sent.id });
+  }
+
+  private findActiveCase(guildId: string, threadId: string): RepairCase | undefined {
+    if (!this.repairCases) return undefined;
+    const active: RepairCaseStatus[] = ["working", "waiting", "ready", "verifying", "needs_input", "blocked"];
+    return this.repairCases.list({ guildId, threadId, statuses: active, limit: 1 })[0];
+  }
+
+  private async handleRepairCaseMessage(message: Message, content: string, existingCase?: RepairCase): Promise<void> {
+    if (!this.repairCases || !this.repairCaseService) return;
+    if (this.processingMessageIds.has(message.id) || this.conversations.hasMessageId(message.id)) return;
+    this.processingMessageIds.add(message.id);
+    const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
+    try {
+      if (existingCase) {
+        this.repairCases.setAuthorizationActor(existingCase.id, message.author.id);
+        this.repairCaseService.notifyNewMessage(existingCase.id, {
+          content,
+          sourceMessageId: message.id,
+          createdAt: message.createdAt,
+          metadata: { userId: message.author.id, roles },
+        });
+        this.conversations.recordProcessedMessage(message.id);
+        return;
+      }
+
+      let threadId = message.channelId;
+      let sendAcknowledgement: (content: string) => Promise<{ id: string }>;
+      if (message.guildId) {
+        const thread = message.channel.isThread()
+          ? message.channel
+          : await message.startThread({
+              name: repairThreadName(content),
+              autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
+              reason: "Plex Repairman issue thread",
+            });
+        threadId = thread.id;
+        sendAcknowledgement = async (value) => thread.send({ content: value, allowedMentions: { parse: [] } });
+      } else {
+        if (!("send" in message.channel)) throw new Error("Discord channel cannot receive repair updates");
+        const channel = message.channel;
+        sendAcknowledgement = async (value) => channel.send({ content: value, allowedMentions: { parse: [] } });
+      }
+      const repairCase = this.repairCases.create({
+        guildId: message.guildId ?? "",
+        threadId,
+        source: message.id,
+        userId: message.author.id,
+        authorizationActor: message.author.id,
+        title: repairThreadName(content),
+        objective: content,
+      });
+      const acknowledgement = "I’m looking into this now. I’ll keep this thread updated and continue automatically if anything needs time to finish.";
+      const sent = await sendAcknowledgement(acknowledgement);
+      this.repairCases.addMessage(repairCase.id, { role: "assistant", content: acknowledgement, sourceMessageId: sent.id });
+      this.repairCases.addActivity(repairCase.id, "user_update", { message: acknowledgement }, "discord");
+      this.repairCaseService.notifyNewMessage(repairCase.id, {
+        content,
+        sourceMessageId: message.id,
+        createdAt: message.createdAt,
+        metadata: { userId: message.author.id, roles },
+      });
+      this.conversations.recordProcessedMessage(message.id);
+    } catch (error) {
+      this.logger.error({ err: error, messageId: message.id }, "Failed to start or update repair case");
+      await message.reply({ content: "I couldn't start that repair. Please check my thread permissions and try again.", allowedMentions: { parse: [], repliedUser: false } });
+    } finally {
+      this.processingMessageIds.delete(message.id);
+    }
+  }
+
   private async registerHealthCommand(token: string, applicationId?: string): Promise<void> {
     if (!applicationId) return;
 
@@ -204,6 +312,11 @@ export class DiscordBotService {
       this.logger.warn({ err: error }, "Failed to register Discord health command");
     }
   }
+}
+
+function repairThreadName(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return (normalized || "Media repair").slice(0, 90);
 }
 
 export class KeyedSerialQueue {

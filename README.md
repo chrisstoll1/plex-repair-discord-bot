@@ -16,6 +16,9 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 - Preview manual imports and renames before applying them.
 - Restrict requests by Discord guild or channel and repairs by Discord role.
 - Retain configurable conversation context for channels, threads, and direct messages.
+- Create a dedicated public Discord thread for each issue, keep participants informed, and continue repairs after downloads or other external work finishes.
+- Persist ongoing repairs across restarts and manage working, waiting, blocked, and completed cases from Ongoing Repairs.
+- Resume waiting repairs from Sonarr or Radarr webhooks without spending model tokens on periodic checks.
 - Track queued and completed service workers from the Agent Tasks page.
 - Configure connections, model behavior, timeouts, memory, and repair policy from the web portal.
 
@@ -79,9 +82,10 @@ For TrueNAS SCALE, use the same Compose configuration in a Custom App and replac
 2. Enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
 3. Enter the Discord application ID if you want the global `/health` slash command.
 4. Connect OpenAI Codex using the device-code panel.
-5. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, memory, and repair policy.
-6. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord, AI-auth, and memory status.
-7. Use `Memory` and `Agent Tasks` to inspect or clear retained operational data.
+5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, and rename events.
+6. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, memory, and repair policy.
+7. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord, AI-auth, and memory status.
+8. Use `Ongoing Repairs`, `Memory`, and `Agent Tasks` to inspect or manage retained operational data.
 
 The portal remains available when Discord is unconfigured or fails to connect, allowing connection settings to be corrected.
 
@@ -92,7 +96,7 @@ Create an application and bot in the [Discord Developer Portal](https://discord.
 Required configuration:
 
 - Enable the `Message Content Intent` for the bot.
-- Give the bot permission to view channels, read message history, send messages, and add reactions where it will be used.
+- Give the bot permission to view channels, read message history, send messages, create public threads, send messages in threads, manage threads, and add reactions where it will be used.
 - Add the bot token on the Plex Repairman `Connections` page.
 - Invite the bot to your server.
 
@@ -103,6 +107,10 @@ In a server, mention the bot with a request:
 ```text
 @Plex Repairman why is Dune missing?
 ```
+
+The bot creates a public thread from the request. Messages from any participant in that active thread are included without another mention. Each participant's current Discord roles are checked for repairs requested on their behalf. Separate issue threads can work concurrently.
+
+When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks are preferred over timed checks. Disabling a webhook integration converts affected waits to a delayed check.
 
 ## Configuration and Data
 
@@ -119,7 +127,7 @@ In a server, mention the bot with a request:
 
 | Path | Contents |
 | --- | --- |
-| `/config/plex-repairman.db` | Settings, conversation memory, processed messages, and agent-task history |
+| `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, conversation memory, processed messages, and agent-task history |
 | `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
 | `/config/pi/auth.json` | Pi/OpenAI authentication data |
 

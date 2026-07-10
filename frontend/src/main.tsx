@@ -12,6 +12,7 @@ const ConnectionsPage = lazy(() => import("./pages/connections").then((module) =
 const BotSettingsPage = lazy(() => import("./pages/bot-settings").then((module) => ({ default: module.BotSettingsPage })));
 const MemoryPage = lazy(() => import("./pages/memory").then((module) => ({ default: module.MemoryPage })));
 const TasksPage = lazy(() => import("./pages/tasks").then((module) => ({ default: module.TasksPage })));
+const RepairsPage = lazy(() => import("./pages/repairs").then((module) => ({ default: module.RepairsPage })));
 
 function RouteFallback({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<LoadingState label="Loading view" />}>{children}</Suspense>;
@@ -32,6 +33,7 @@ const router = createBrowserRouter([{
     { path: "bot-settings", element: <RouteFallback><BotSettingsPage /></RouteFallback> },
     { path: "memory", element: <RouteFallback><MemoryPage /></RouteFallback> },
     { path: "tasks", element: <RouteFallback><TasksPage /></RouteFallback> },
+    { path: "repairs", element: <RouteFallback><RepairsPage /></RouteFallback> },
     { path: "*", element: <Navigate to="/" replace /> },
   ],
 }]);

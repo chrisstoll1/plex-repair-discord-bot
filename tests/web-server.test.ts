@@ -10,6 +10,7 @@ import { ConversationStore } from "../src/storage/conversation.js";
 import { openDatabase } from "../src/storage/db.js";
 import { SecretBox } from "../src/storage/secrets.js";
 import { SettingsStore } from "../src/storage/settings.js";
+import { RepairCaseStore } from "../src/storage/repair-cases.js";
 import { createWebServer } from "../src/web/server.js";
 
 test("web API redacts secrets, validates atomically, and serves the SPA", async (t) => {
@@ -30,6 +31,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   const db = openDatabase(config);
   const settings = new SettingsStore(db, SecretBox.open(config.secretsKeyPath));
   const conversations = new ConversationStore(db);
+  const repairs = new RepairCaseStore(db);
   settings.setString("discord.token", "never-return-this", { secret: true });
   settings.setString("discord.applicationId", "before");
 
@@ -51,6 +53,12 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     cancelLogin: () => piSnapshot,
     logout: () => piSnapshot,
   };
+  const repairService = {
+    receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
+    cancel: (id: string) => repairs.cancel(id, "test"),
+    resume: (id: string) => repairs.resume(id, "test"),
+    refreshScheduling: () => undefined,
+  };
 
   const app = await createWebServer(
     settings,
@@ -60,6 +68,8 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     piAuth as never,
     pino({ level: "silent" }),
     webRoot,
+    repairs,
+    repairService as never,
   );
   t.after(async () => {
     await app.close();
@@ -93,6 +103,18 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
 
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/memory/sessions" })).json(), { sessions: [] });
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
+  const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
+  repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
+  const webhookConfig = await app.inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
+  assert.equal(webhookConfig.statusCode, 200);
+  const sonarrUrl = webhookConfig.json().sonarrUrl as string;
+  const webhookPath = new URL(sonarrUrl).pathname;
+  const webhook = await app.inject({ method: "POST", url: webhookPath, payload: { eventType: "Download", episodes: [{ id: 42 }], downloadId: "download-one" } });
+  assert.equal(webhook.statusCode, 202);
+  assert.equal(webhook.json().matched, 1);
+  assert.equal(repairs.get(repair.id)?.status, "ready");
+  const repairList = await app.inject({ method: "GET", url: "/api/repairs" });
+  assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
   assert.equal((await app.inject({ method: "GET", url: "/api/not-real" })).statusCode, 404);
   assert.match((await app.inject({ method: "GET", url: "/connections" })).body, /Repairman/);
 });

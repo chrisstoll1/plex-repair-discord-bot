@@ -63,6 +63,41 @@ export type AgentTask = {
   updatedAt: string;
 };
 
+export type RepairCaseStatus = "working" | "waiting" | "ready" | "verifying" | "resolved" | "needs_input" | "blocked" | "exhausted" | "cancelled";
+export type RepairCase = {
+  id: string;
+  status: RepairCaseStatus;
+  title: string;
+  latestUpdate?: string;
+  nextWakeAt?: string;
+  threadUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  resolvedAt?: string;
+  cancelledAt?: string;
+};
+
+export type RepairCaseActivity = {
+  id: string;
+  repairId?: string;
+  type: string;
+  message?: string;
+  status?: RepairCaseStatus;
+  details?: unknown;
+  createdAt: string;
+};
+
+export type WebhookConfig = {
+  publicBaseUrl: string;
+  sonarrEnabled: boolean;
+  radarrEnabled: boolean;
+  sonarrUrl?: string;
+  radarrUrl?: string;
+  sonarrLastReceivedAt?: string;
+  radarrLastReceivedAt?: string;
+};
+
 export type PiAuthSnapshot = {
   configured: boolean;
   status: { configured: boolean; source?: string; label?: string };
@@ -110,6 +145,13 @@ export const api = {
   getTasks: () => request<{ tasks: AgentTask[] }>("/api/tasks").then((response) => response.tasks),
   cancelTask: (id: string) => request<{ task: AgentTask }>(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.task),
   clearTaskHistory: () => request<{ deleted: number }>("/api/tasks/history", { method: "DELETE" }),
+  getRepairs: () => request<{ repairs: RepairCase[] }>("/api/repairs").then((response) => response.repairs),
+  cancelRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.repair),
+  resumeRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/resume`, { method: "POST" }).then((response) => response.repair),
+  getRepairActivity: (id: string) => request<{ activity: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/activity`).then((response) => response.activity),
+  getWebhookConfig: () => request<WebhookConfig>("/api/webhooks/config"),
+  updateWebhookConfig: (config: Pick<WebhookConfig, "publicBaseUrl" | "sonarrEnabled" | "radarrEnabled">) => request<WebhookConfig>("/api/webhooks/config", { method: "PUT", body: JSON.stringify(config) }),
+  rotateWebhookSecret: () => request<WebhookConfig>("/api/webhooks/rotate-secret", { method: "POST" }),
   getPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth").then((response) => response.piAuth),
   startPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/start", { method: "POST" }).then((response) => response.piAuth),
   cancelPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/cancel", { method: "POST" }).then((response) => response.piAuth),
