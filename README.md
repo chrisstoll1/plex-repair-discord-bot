@@ -4,81 +4,41 @@
 
 # Plex Repairman
 
-Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media apps, explain what it found, and run repairs allowed by your policy settings.
+Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media services, explain what it found, and run repairs allowed by your policy settings.
 
-It is built for common home media-server workflows like missing movies, missing episodes, wrong anime audio language, replacement searches, and checking whether Plex/Sonarr/Radarr agree about what is available.
+Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
-**NOTE:** **Currently only OpenAI Codex - OAuth is supported for AI models integration**
-## Features
+## Capabilities
 
-- Discord mention-driven repair assistant.
-- Optional direct-message handling.
-- Web portal for configuration, health checks, and OpenAI Codex auth.
-- Plex, Sonarr, and Radarr connection settings stored in encrypted SQLite-backed config.
-- Radarr-first handling for movie, film, theatrical, and multi-language movie requests.
-- Sonarr-first handling for series, seasons, episodes, specials, anime seasons, and OVAs.
-- Read-only Radarr movie, queue, history, file, and release inspection.
-- Read-only Sonarr series, season, episode, queue, history, file, and release inspection.
-- Plex library and service health inspection.
-- Manual import and rename previews without applying changes.
-- Dedicated Sonarr, Radarr, and Plex repair workers.
-- Searches, release grabs, queue removal, imports, renames, monitoring updates, and Plex library refresh.
-- Optional destructive file and media removal.
-- Repair-role and destructive-action policy checks at execution time.
-- Configurable conversation memory for follow-up messages in channels, threads, and DMs.
-- Configurable status reactions and refreshed typing indicators while requests are running.
-- OpenAI Codex device-code auth through Pi Coding Agent.
+- Diagnose missing or incorrect movies, series, seasons, episodes, specials, and anime releases.
+- Compare Plex availability with Sonarr or Radarr state, queues, history, files, and releases.
+- Search for and grab releases, import and rename files, update monitoring and media settings, and refresh Plex libraries.
+- Preview manual imports and renames before applying them.
+- Restrict requests by Discord guild or channel and repairs by Discord role.
+- Retain configurable conversation context for channels, threads, and direct messages.
+- Track queued and completed service workers from the Agent Tasks page.
+- Configure connections, model behavior, timeouts, memory, and repair policy from the web portal.
 
-## How It Works
+## Safety
 
-Plex Repairman uses separate diagnostic and repair profiles for Sonarr, Radarr, and Plex. A coordinator assigns inspection tasks, then uses a service-specific repair worker when the request and current policy permit it.
+The web portal has no built-in authentication. Keep it on a trusted network or place it behind a reverse proxy with access controls. Portal users can change credentials and policies and inspect or delete retained conversation and agent-task data.
 
-Repair profiles are available only when `Require confirmation` is disabled and the requester satisfies configured repair roles. Every write rechecks current policy. Destructive writes additionally require `Allow destructive repairs`.
+Repair execution is disabled by default:
 
-For example, if you ask for a replacement anime episode because the audio is wrong, the bot can:
+- `Require confirmation` currently blocks all repair execution because action-specific confirmation is not implemented. The bot can still diagnose issues and propose repairs.
+- Disabling confirmation permits direct non-destructive repairs for users who satisfy the configured repair-role policy.
+- `Allow destructive repairs` must also be enabled for queue removal, file deletion, and movie or series removal.
+- Repair policy is checked again when each write action runs.
 
-1. Find the Sonarr series.
-2. Resolve the exact season and episode.
-3. Inspect the current episode file.
-4. Inspect available releases and relevant queue or history entries.
-5. Delete only the bad episode file when destructive repairs are enabled.
-6. Trigger a replacement search or grab a selected release.
-7. Report the exact service result.
+## Quick Start
 
-For movies, it follows the same pattern through Radarr and works at the movie-file level.
+The published image is available from GitHub Container Registry:
 
-## Docker Install
-
-The published container image is available from GitHub Container Registry:
-
-```bash
+```text
 ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
 ```
 
-Run with Docker:
-
-```bash
-docker run -d \
-  --name plex-repairman \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  -e CONFIG_DIR=/config \
-  -e HTTP_HOST=0.0.0.0 \
-  -e HTTP_PORT=3000 \
-  -e LOG_LEVEL=info \
-  -v ./config:/config \
-  ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
-```
-
-Open the portal at:
-
-```text
-http://localhost:3000
-```
-
-The `/config` volume is required. It stores app settings, encrypted secrets, and Pi/OpenAI auth data. Back up the entire directory as a unit; the SQLite database and `secrets.key` belong together because stored API tokens are encrypted.
-
-## Docker Compose
+Create a Compose file:
 
 ```yaml
 services:
@@ -97,309 +57,135 @@ services:
     restart: unless-stopped
 ```
 
-Start it:
+Start the container and open the portal:
 
 ```bash
 docker compose up -d
 ```
 
-Stop it:
-
-```bash
-docker compose down
-```
-
-If Plex, Sonarr, or Radarr are running in other containers, use URLs that are reachable from the Plex Repairman container. Examples:
-
 ```text
-http://sonarr:8989
-http://radarr:7878
-http://plex:32400
+http://localhost:3000
 ```
 
-If they are running on the host or another machine, use the appropriate LAN address instead.
+The `/config` volume is required for persistent settings, secrets, conversation memory, task history, and OpenAI auth. Back up the entire directory as a unit.
 
-Avoid Cloudflare, tunnels, or public reverse-proxy URLs for Sonarr/Radarr/Plex API access. Release lookups can run long enough for proxies to return `504 Gateway Timeout`; direct Docker or LAN URLs are more reliable.
+Use service URLs reachable from the container, such as `http://sonarr:8989`, `http://radarr:7878`, and `http://plex:32400`. For services on another machine, use their LAN addresses. Direct Docker or LAN URLs are preferable to tunnels and public proxies, which may time out during long release lookups.
 
-## TrueNAS Custom App Compose
-
-In TrueNAS SCALE, create a Custom App and paste a compose file like this. Change the dataset path to match your system.
-
-```yaml
-services:
-  plex-repairman:
-    image: ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
-    pull_policy: always
-    container_name: plex-repairman
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      CONFIG_DIR: /config
-      HTTP_HOST: 0.0.0.0
-      HTTP_PORT: 3000
-      LOG_LEVEL: info
-    volumes:
-      - /mnt/tank/apps/plex-repairman/config:/config
-```
-
-Recommended TrueNAS notes:
-
-- Create the config dataset before starting the app.
-- Replace `/mnt/tank/apps/plex-repairman/config` with your actual dataset path.
-- Back up the full config dataset, not just the database file.
-- Put the portal behind your normal reverse proxy or private network access controls.
-- Configure Sonarr, Radarr, and Plex URLs using addresses reachable from the app container.
-
-This compose example is for TrueNAS Custom App installs. Official TrueNAS catalog submission uses the Docker Compose-based catalog at `https://github.com/truenas/apps` and wraps the same image, `/config` storage, port `3000`, and environment variables in catalog metadata and templates.
+For TrueNAS SCALE, use the same Compose configuration in a Custom App and replace `./config` with a dataset path such as `/mnt/tank/apps/plex-repairman/config`.
 
 ## First-Time Setup
 
-1. Start the container.
-2. Open `http://<host>:3000`.
-3. Open `Connections`.
-4. Enter your Discord bot token and application ID.
-5. Configure allowed guild IDs and channel IDs if you want to restrict where the bot responds.
-6. Configure repair role IDs if only specific Discord roles should be allowed to run repair actions.
-7. Configure Sonarr URL and API key.
-8. Configure Radarr URL and API key.
-9. Configure Plex URL and token.
-10. Open `Bot Settings` and choose repair policy settings.
-11. Choose conversation memory settings.
-12. Save settings.
-13. Connect OpenAI Codex auth from the device-code panel on `Connections`.
-14. Check `Overview` to confirm all services are reachable.
+1. Open `http://<host>:3000/connections`.
+2. Enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
+3. Enter the Discord application ID if you want the global `/health` slash command.
+4. Connect OpenAI Codex using the device-code panel.
+5. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, memory, and repair policy.
+6. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord, AI-auth, and memory status.
+7. Use `Memory` and `Agent Tasks` to inspect or clear retained operational data.
 
-The portal intentionally has no built-in authentication. Run it only on a trusted network or put it behind a reverse proxy with access controls.
+The portal remains available when Discord is unconfigured or fails to connect, allowing connection settings to be corrected.
 
-## Discord Bot Setup
+## Discord Setup
 
-Create a Discord application and bot in the Discord Developer Portal.
+Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications).
 
-Required setup:
+Required configuration:
 
-- Copy the bot token into Plex Repairman's settings page.
-- Copy the application ID into Plex Repairman's settings page.
 - Enable the `Message Content Intent` for the bot.
+- Give the bot permission to view channels, read message history, send messages, and add reactions where it will be used.
+- Add the bot token on the Plex Repairman `Connections` page.
 - Invite the bot to your server.
-- Give it permission to read messages, send messages, and add reactions in the channels where it should respond.
 
-By default, the bot responds when mentioned:
+The application ID is optional and is used to register the global `/health` slash command. Direct messages are disabled by default and can be enabled under `Bot Settings`.
 
-```text
-@Plex Repairman why is Dune missing?
-```
-
-Direct messages are disabled by default. Enable `Allow Direct Messages` in settings if you want DM messages to be handled as bot requests without requiring an `@` mention.
-
-## Example Usage
-
-Missing movie:
+In a server, mention the bot with a request:
 
 ```text
 @Plex Repairman why is Dune missing?
 ```
 
-Search for a movie in Radarr:
+## Configuration and Data
+
+### Environment Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CONFIG_DIR` | `./config` | Persistent application data directory; the container sets `/config` |
+| `HTTP_HOST` | `0.0.0.0` | Web server bind address |
+| `HTTP_PORT` | `3000` | Web server port |
+| `LOG_LEVEL` | `info` | Application log level |
+
+### Persistent Files
+
+| Path | Contents |
+| --- | --- |
+| `/config/plex-repairman.db` | Settings, conversation memory, processed messages, and agent-task history |
+| `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
+| `/config/pi/auth.json` | Pi/OpenAI authentication data |
+
+Ordinary settings and retained message/task data are not encrypted. The database and `secrets.key` belong together; losing the key makes encrypted service credentials unrecoverable.
+
+Conversation memory defaults to per-user context within a channel or thread, 10 recent messages, a 24-hour TTL, and inclusion of bot replies. Discord threads have distinct channel IDs, including when channel allowlists are configured.
+
+## Example Requests
 
 ```text
-@Plex Repairman can you search Radarr for The Batman?
+@Plex Repairman Plex does not show Chainsaw Man episode 3. Check Sonarr and Plex.
 ```
-
-Wrong audio on a movie:
 
 ```text
-@Plex Repairman replace Demon Slayer Mugen Train with English or multi-language audio
+@Plex Repairman find a dual-audio replacement for Jujutsu Kaisen S01E10
 ```
-
-Wrong audio on an anime episode:
-
-```text
-@Plex Repairman fix Demon Slayer S02E05, it has the wrong audio
-```
-
-Search for a replacement episode:
-
-```text
-@Plex Repairman search for a replacement for One Piece S01E12 with English audio
-```
-
-Search specials or Season 0:
-
-```text
-@Plex Repairman search Demon Slayer specials for the English dub
-```
-
-Check why something is not in Plex:
-
-```text
-@Plex Repairman Plex does not show Chainsaw Man episode 3, can you check Sonarr and Plex?
-```
-
-Refresh a Plex library section:
 
 ```text
 @Plex Repairman refresh my Plex TV library
 ```
 
-Ask before a repair:
+## Operations
 
-```text
-@Plex Repairman find a better dual-audio release for Jujutsu Kaisen S01E10
-```
-
-The bot should explain what it found and ask for confirmation before policy-controlled repair actions.
-
-## Conversation Memory
-
-Conversation memory is configured on the `Bot Settings` page. Active sessions can be inspected and deleted from `Memory`.
-
-Available settings:
-
-- `Enable conversation memory`: turns recent-message context on or off.
-- `Memory Scope`: controls whether memory is per user or shared by everyone in a channel/thread.
-- `Max Messages To Remember`: limits how many recent turns are included in the next prompt.
-- `Memory TTL Hours`: expires older stored messages.
-- `Include bot replies in memory`: lets follow-up messages include what the bot previously said.
-
-Default behavior:
-
-- Memory is enabled.
-- Scope is `Channel/thread + user`.
-- Up to 10 recent messages are remembered.
-- Messages expire after 24 hours.
-- Bot replies are included.
-
-Discord threads use their own Discord channel ID, so each thread gets separate memory. If you configure allowed channel IDs, remember that a Discord thread has a different channel ID than its parent channel.
-
-Scope options:
-
-- `Channel/thread + user`: safest default. Each user gets separate memory within a channel or thread.
-- `Shared channel/thread`: collaborative mode. Everyone in the channel or thread shares the same recent context.
-
-Memory is used only as prompt context. The app still creates a fresh AI session for each Discord message.
-
-## Repair Policy
-
-Repair settings are configured on the `Bot Settings` page.
-
-`Require confirmation for repair actions` currently blocks repair profiles because action-specific confirmation is not implemented yet. Disable it to permit direct repair execution.
-
-`Allow destructive repair actions` controls queue removal, file deletion, and movie/series removal.
-
-Recommended defaults:
-
-- Keep confirmation required.
-- Keep destructive actions disabled unless the bot should be allowed to remove files or media entries.
-- Configure repair role IDs to limit who can launch repair workers.
-
-Important behavior:
-
-- Read-only checks are allowed without confirmation.
-- Non-destructive repairs can execute when confirmation is disabled.
-- Destructive repairs also require the destructive-action setting.
-- Confirmation-enabled repairs remain blocked until action-specific confirmation is implemented.
-
-## OpenAI Codex Auth
-
-Plex Repairman uses Pi Coding Agent for the AI runtime and supports OpenAI Codex auth through a device-code flow.
-
-Open the portal and select `Connections`:
-
-```text
-http://<host>:3000/connections
-```
-
-Start login, open the verification URL, enter the displayed code, and leave the page open until it completes.
-
-Credentials are stored under:
-
-```text
-/config/pi/auth.json
-```
-
-OAuth access tokens expire, but the SDK refreshes them automatically when possible. The portal also attempts to refresh expired credentials before showing auth status. If refresh fails, reconnect from `Connections`.
-
-## Health Checks
-
-The lightweight container health endpoint is:
+The container health endpoint is:
 
 ```text
 http://<host>:3000/health
 ```
 
-It returns `200` when the web process is alive. It does not require Discord, Sonarr, Radarr, Plex, or Pi auth to be configured, so container orchestrators do not restart the app during first-time setup.
+It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Detailed service connectivity is available on the portal overview:
+Images are published from `master` and manual workflow runs with these tags:
 
-```text
-http://<host>:3000/
-```
+| Tag | Use |
+| --- | --- |
+| `latest` | Current mutable build from `master` |
+| `<package-version>` | Version label; mutable when rebuilt without a version bump |
+| `sha-<commit-sha>` | Immutable build for a specific commit |
 
-## Published Images
-
-GitHub Actions publishes images to GHCR on pushes to `master` and manual workflow runs.
-
-Available tags:
-
-```text
-ghcr.io/chrisstoll1/plex-repair-discord-bot:latest
-ghcr.io/chrisstoll1/plex-repair-discord-bot:<package-version>
-ghcr.io/chrisstoll1/plex-repair-discord-bot:sha-<commit-sha>
-```
-
-Use `latest` for normal deployments. Use `<package-version>` when you want a stable release tag. Use `sha-<commit-sha>` when you want to pin, test, or roll back to a specific build.
-
-Images include OCI labels that link back to the source repository and exact commit:
-
-```text
-org.opencontainers.image.source
-org.opencontainers.image.revision
-org.opencontainers.image.url
-```
+Use a SHA tag when reproducible deployment or rollback is important.
 
 ## Development
 
-Install dependencies:
+Node 24 is recommended; Node 22.19 or newer is required by the Pi SDK.
 
 ```bash
-npm install
-npm --prefix frontend install
+npm ci
+npm --prefix frontend ci
+npm run typecheck
+npm test
+npm run build
 ```
 
-Run the API and frontend development servers in separate terminals:
+Run the API and Vite development servers in separate terminals:
 
 ```bash
 npm run dev
 npm run dev:web
 ```
 
-The Vite development server proxies `/api` requests to the API on port `3000`.
-
-Typecheck:
-
-```bash
-npm run typecheck
-```
-
-Build:
-
-```bash
-npm run build
-```
-
-Run tests:
-
-```bash
-npm test
-```
-
-Run with the local development compose file:
+Vite proxies `/api` to the API on port `3000`. To run the local development container instead:
 
 ```bash
 docker compose up --build
 ```
 
-By default, local config is stored in `./config`. In containers, use `/config` as a persistent volume.
+## License
 
-The Pi SDK requires Node `>=22.19.0`. If your local Node is older, use Docker Desktop or the published container image.
+Plex Repairman is available under the [MIT License](LICENSE).
