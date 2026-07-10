@@ -20,11 +20,17 @@ export function authorizeRepair(settings: RuntimeSettings, context: RepairContex
     return toolResponse({ blocked: true, reason: "Destructive repair actions are disabled by policy", action: options.action });
   }
 
-  if (settings.repair.requireConfirmation && !options.confirmed) {
-    return toolResponse({ confirmationRequired: true, action: options.action, reason: "Repair policy requires explicit confirmation" });
+  if (settings.repair.requireConfirmation) {
+    return toolResponse({ confirmationRequired: true, action: options.action, reason: "Confirmed repair execution is not enabled yet" });
   }
 
   return undefined;
+}
+
+export function canStartRepairWorker(settings: RuntimeSettings, context: RepairContext): boolean {
+  if (settings.repair.requireConfirmation) return false;
+  const repairRoles = csvToSet(settings.discord.repairRoleIds);
+  return repairRoles.size === 0 || context.roles.some((role) => repairRoles.has(role));
 }
 
 function toolResponse(results: unknown) {

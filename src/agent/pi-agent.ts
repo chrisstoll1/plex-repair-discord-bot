@@ -15,11 +15,12 @@ import { readRuntimeSettings } from "../domain/settings.js";
 import type { RuntimeSettings } from "../domain/settings.js";
 import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
+import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import { createMediaClients } from "../services/service-factory.js";
-import { COORDINATOR_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
-import { authorizeRepair } from "./policy.js";
+import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
-import { TOOL_PROFILES, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
+import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
 
 export type AgentRequestContext = {
   guildId?: string;
@@ -198,7 +199,7 @@ export class PiAgentService {
     await new Promise<void>((resolve) => this.coordinatorIdleWaiters.push(resolve));
   }
 
-  async runToolAgentTask(task: { id: string; title: string; toolProfile: string; prompt: string; input?: unknown }, roles: string[], signal?: AbortSignal): Promise<string> {
+  async runToolAgentTask(task: ToolAgentTask, roles: string[], signal?: AbortSignal): Promise<string> {
     if (!isToolProfile(task.toolProfile)) throw new Error(`Unknown tool profile: ${task.toolProfile}`);
     const settings = readRuntimeSettings(this.store);
     const prompt = [
@@ -211,9 +212,16 @@ export class PiAgentService {
       .join("\n\n");
 
     return this.runAgentSession({
-      systemPrompt: TOOL_AGENT_INSTRUCTIONS,
+      systemPrompt: isRepairToolProfile(task.toolProfile) ? REPAIR_AGENT_INSTRUCTIONS : TOOL_AGENT_INSTRUCTIONS,
       prompt,
-      tools: this.createTools({ channelId: "tool-agent", userId: "tool-agent", roles }, TOOL_PROFILES[task.toolProfile]),
+      tools: this.createTools({
+        guildId: task.guildId,
+        channelId: task.channelId,
+        userId: task.userId,
+        roles,
+        conversationKey: task.conversationKey,
+        sourceMessageId: task.sourceMessageId,
+      }, TOOL_PROFILES[task.toolProfile]),
       thinkingLevel: settings.ai.thinkingLevel,
       signal,
     });
@@ -290,7 +298,8 @@ export class PiAgentService {
       if (!this.queue) throw new Error("Tool-agent queue is not initialized");
       return this.queue;
     };
-    const profileSchema = Type.Union(toolProfileNames().map((profile) => Type.Literal(profile)) as [ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>]);
+    const availableProfiles = this.availableToolProfiles(context);
+    const profileSchema = Type.Union(availableProfiles.map((profile) => Type.Literal(profile)) as [ReturnType<typeof Type.Literal>, ReturnType<typeof Type.Literal>, ...ReturnType<typeof Type.Literal>[]]);
     const taskSchema = Type.Object({
       title: Type.String({ description: "Short task title" }),
       toolProfile: profileSchema,
@@ -303,9 +312,10 @@ export class PiAgentService {
       defineTool({
         name: "start_tool_agent",
         label: "Start tool agent",
-        description: "Run one focused read-only tool-agent task. This first version waits for completion before returning.",
+        description: "Run one focused diagnostic or repair task using an available profile. Repair profiles are exposed only when server policy permits direct execution.",
         parameters: taskSchema,
         execute: async (_toolCallId, params: StartToolAgentParams) => {
+          this.assertToolProfileAllowed(params.toolProfile, context);
           const task = queue().enqueue(this.toToolAgentTaskRequest(params, context));
           return toolResponse(summarizeTask(await queue().waitForTask(task.id)));
         },
@@ -313,9 +323,10 @@ export class PiAgentService {
       defineTool({
         name: "start_many_tool_agents",
         label: "Start many tool agents",
-        description: "Run multiple independent read-only tool-agent tasks in parallel. This first version waits for all tasks before returning.",
+        description: "Run one to eight independent diagnostic or repair tasks in parallel and wait for all results.",
         parameters: Type.Object({ tasks: Type.Array(taskSchema, { minItems: 1, maxItems: 8, description: "One to eight independent tool-agent tasks to run" }) }),
         execute: async (_toolCallId, params: StartManyToolAgentsParams) => {
+          for (const task of params.tasks) this.assertToolProfileAllowed(task.toolProfile, context);
           const tasks = queue().enqueueMany(params.tasks.map((task) => this.toToolAgentTaskRequest(task, context)));
           const completed = await Promise.all(tasks.map((task) => queue().waitForTask(task.id)));
           return toolResponse(completed.map(summarizeTask));
@@ -360,6 +371,18 @@ export class PiAgentService {
         },
       }),
     ];
+  }
+
+  private availableToolProfiles(context: AgentRequestContext): ToolProfile[] {
+    const settings = readRuntimeSettings(this.store);
+    const allowRepair = canStartRepairWorker(settings, context);
+    return toolProfileNames().filter((profile) => allowRepair || !isRepairToolProfile(profile));
+  }
+
+  private assertToolProfileAllowed(profile: ToolProfile, context: AgentRequestContext): void {
+    if (!this.availableToolProfiles(context).includes(profile)) {
+      throw new Error(`Tool profile ${profile} is not allowed by the current repair policy`);
+    }
   }
 
   private toToolAgentTaskRequest(params: StartToolAgentParams, context: AgentRequestContext): ToolAgentTaskRequest {
@@ -865,6 +888,7 @@ export class PiAgentService {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
             action: `Remove Radarr queue item ID ${params.queueId} removeFromClient=${params.removeFromClient} blocklist=${params.blocklist} skipRedownload=${params.skipRedownload ?? false} changeCategory=${params.changeCategory ?? false}`,
             confirmed: params.confirmed,
+            destructive: true,
           });
           if (policy) return policy;
 
@@ -888,6 +912,7 @@ export class PiAgentService {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
             action: `Remove Sonarr queue item ID ${params.queueId} removeFromClient=${params.removeFromClient} blocklist=${params.blocklist} skipRedownload=${params.skipRedownload ?? false} changeCategory=${params.changeCategory ?? false}`,
             confirmed: params.confirmed,
+            destructive: true,
           });
           if (policy) return policy;
 
