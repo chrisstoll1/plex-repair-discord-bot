@@ -56,7 +56,7 @@ export class DiscordBotService {
 
       const latest = readRuntimeSettings(this.store);
       const isDirectMessage = message.guildId === null;
-      const existingCase = this.findActiveCase(message.guildId ?? "", message.channelId);
+      const existingCase = this.findRepairCase(message.guildId ?? "", message.channelId);
 
       if (isDirectMessage) {
         if (!latest.discord.allowDirectMessages) {
@@ -231,10 +231,9 @@ export class DiscordBotService {
     this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: truncateDiscord(content), sourceMessageId: sent.id });
   }
 
-  private findActiveCase(guildId: string, threadId: string): RepairCase | undefined {
+  private findRepairCase(guildId: string, threadId: string): RepairCase | undefined {
     if (!this.repairCases) return undefined;
-    const active: RepairCaseStatus[] = ["working", "waiting", "ready", "verifying", "needs_input", "blocked"];
-    return this.repairCases.list({ guildId, threadId, statuses: active, limit: 1 })[0];
+    return this.repairCases.list({ guildId, threadId, limit: 1 })[0];
   }
 
   private async handleRepairCaseMessage(message: Message, content: string, existingCase?: RepairCase): Promise<void> {

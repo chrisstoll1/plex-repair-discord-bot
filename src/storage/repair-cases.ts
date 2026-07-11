@@ -190,9 +190,23 @@ export class RepairCaseStore {
 
   setAuthorizationActor(id: string, userId: string): RepairCase | undefined {
     const now = this.timestamp();
-    const result = this.db.prepare("UPDATE repair_cases SET authorization_actor = ?, updated_at = ? WHERE id = ? AND status NOT IN ('resolved','exhausted','cancelled')")
+    const result = this.db.prepare("UPDATE repair_cases SET authorization_actor = ?, updated_at = ? WHERE id = ?")
       .run(userId, now, id);
     return result.changes === 1 ? this.get(id) : undefined;
+  }
+
+  reopen(id: string, actor?: string): RepairCase | undefined {
+    return this.db.transaction(() => {
+      const current = this.get(id);
+      if (!current || !TERMINAL.includes(current.status)) return undefined;
+      const now = this.timestamp();
+      const result = this.db.prepare(`UPDATE repair_cases SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL,
+        resolved_at = NULL, cancelled_at = NULL, updated_at = ? WHERE id = ? AND status = ?`).run(now, id, current.status);
+      if (result.changes !== 1) return undefined;
+      this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(id);
+      this.insertActivity(id, "status_changed", actor, { from: current.status, to: "ready", reason: "new_thread_message" }, now);
+      return this.get(id);
+    })();
   }
 
   transition(id: string, status: RepairCaseStatus, options: { from?: RepairCaseStatus[]; checkpoint?: unknown; actor?: string; details?: unknown } = {}): RepairCase | undefined {

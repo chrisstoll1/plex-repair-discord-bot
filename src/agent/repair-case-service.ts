@@ -103,9 +103,12 @@ export class RepairCaseService {
     const current = this.store.get(caseId);
     if (!current) throw new Error(`Repair case ${caseId} was not found`);
     this.store.addMessage(caseId, { ...message, role: message.role ?? "user" });
+    const actor = message.sourceMessageId ? `message:${message.sourceMessageId}` : "message";
     const repairCase = ["waiting", "needs_input", "blocked"].includes(current.status)
-      ? this.store.resume(caseId, message.sourceMessageId ? `message:${message.sourceMessageId}` : "message") ?? this.store.get(caseId)!
-      : this.store.get(caseId)!;
+      ? this.store.resume(caseId, actor) ?? this.store.get(caseId)!
+      : ["resolved", "exhausted", "cancelled"].includes(current.status)
+        ? this.store.reopen(caseId, actor) ?? this.store.get(caseId)!
+        : this.store.get(caseId)!;
     if (repairCase.leaseOwner) this.pendingMessages.add(caseId);
     if (["ready", "working", "verifying"].includes(repairCase.status) && !repairCase.leaseOwner) this.enqueue(caseId);
     this.drain();

@@ -172,6 +172,21 @@ test("runner timeout remains visible and automatically continues when an aborted
   await service.shutdown();
 });
 
+test("a new thread message reopens a completed repair without another mention", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("reopen-completed"));
+  store.transition(repairCase.id, "resolved", { from: ["ready"] });
+  const service = new RepairCaseService(store, { runner: async () => ({ status: "resolved" }) });
+  service.start();
+  const reopened = service.notifyNewMessage(repairCase.id, { content: "That fixed most of it, but episode 13 is still missing.", sourceMessageId: "follow-up" });
+  assert.equal(reopened.status, "ready");
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved" && store.get(repairCase.id)?.attempts === 1);
+  assert.equal(store.listMessages(repairCase.id).at(-1)?.sourceMessageId, "follow-up");
+  assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "status_changed" && (entry.details as { reason?: string }).reason === "new_thread_message"), true);
+  await service.shutdown();
+});
+
 function caseParams(title: string): CreateRepairCase {
   return {
     id: title,
