@@ -72,6 +72,7 @@ export type InboundArrEvent = {
   eventId: string;
   eventType: string;
   mediaId?: string;
+  mediaIds?: string[];
   payload?: unknown;
   receivedAt?: Date | string;
 };
@@ -313,21 +314,25 @@ export class RepairCaseStore {
   receiveEvent(event: InboundArrEvent): ReceiveEventResult {
     return this.db.transaction(() => {
       const receivedAt = event.receivedAt ? timestamp(event.receivedAt) : this.timestamp();
+      const mediaIds = [...new Set([...(event.mediaIds ?? []), ...(event.mediaId ? [event.mediaId] : [])])];
       const inserted = this.db.prepare(`INSERT INTO repair_inbound_events
         (provider, event_id, event_type, media_id, payload_json, received_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(provider, event_id) DO NOTHING`).run(
-        event.provider, event.eventId, event.eventType, event.mediaId ?? null, json(event.payload), receivedAt,
+        event.provider, event.eventId, event.eventType, mediaIds[0] ?? null, json(event.payload), receivedAt,
       );
       if (inserted.changes === 0) return { duplicate: true, matchedCaseIds: [] };
+      const mediaClause = mediaIds.length > 0
+        ? `(w.media_id IS NULL OR w.media_id IN (${mediaIds.map(() => "?").join(", ")}))`
+        : "w.media_id IS NULL";
       const rows = this.db.prepare(`SELECT w.case_id FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
         WHERE w.type = 'arr_event' AND c.status = 'waiting' AND w.provider = ?
           AND (w.event_type IS NULL OR w.event_type = ?)
-          AND (w.media_id IS NULL OR w.media_id = ?)
-        ORDER BY w.id`).all(event.provider, event.eventType, event.mediaId ?? null) as Array<{ case_id: string }>;
+          AND ${mediaClause}
+        ORDER BY w.id`).all(event.provider, event.eventType, ...mediaIds) as Array<{ case_id: string }>;
       const matchedCaseIds: string[] = [];
       for (const row of rows) {
         this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ? AND type = 'arr_event'").run(row.case_id);
-        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: `${event.provider}:${event.eventId}`, details: { eventType: event.eventType, mediaId: event.mediaId } });
+        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: `${event.provider}:${event.eventId}`, details: { eventType: event.eventType, mediaIds } });
         if (resumed) matchedCaseIds.push(row.case_id);
       }
       return { duplicate: false, matchedCaseIds };

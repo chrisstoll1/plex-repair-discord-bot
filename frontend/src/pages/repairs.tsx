@@ -13,14 +13,14 @@ type Filter = "all" | RepairGroup;
 
 const groups: { id: RepairGroup; label: string; description: string; statuses: RepairCaseStatus[] }[] = [
   { id: "working", label: "Working", description: "Repairs currently being handled or verified.", statuses: ["working", "ready", "verifying"] },
-  { id: "waiting", label: "Waiting", description: "Repairs paused until their next scheduled check.", statuses: ["waiting"] },
+  { id: "waiting", label: "Waiting", description: "Repairs paused until an expected download, import, or scheduled check.", statuses: ["waiting"] },
   { id: "attention", label: "Needs attention", description: "Repairs that need input or cannot continue automatically.", statuses: ["needs_input", "blocked", "exhausted"] },
   { id: "completed", label: "Completed", description: "Resolved and cancelled repair history.", statuses: ["resolved", "cancelled"] },
 ];
 
 const statusCopy: Record<RepairCaseStatus, string> = {
   working: "Repair work is in progress",
-  waiting: "Waiting before the next attempt",
+  waiting: "Waiting for downloads or another update",
   ready: "Ready to continue",
   verifying: "Checking that the repair worked",
   resolved: "Repair completed",

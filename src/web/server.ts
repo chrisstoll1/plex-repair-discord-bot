@@ -331,24 +331,28 @@ function normalizeArrWebhook(provider: "sonarr" | "radarr", body: unknown) {
   if (!body || typeof body !== "object") throw Object.assign(new Error("Webhook payload must be a JSON object"), { statusCode: 400 });
   const payload = body as Record<string, unknown>;
   const eventType = normalizeEventType(typeof payload.eventType === "string" ? payload.eventType : "unknown");
-  const mediaId = provider === "sonarr" ? sonarrMediaId(payload) : radarrMediaId(payload);
-  const stable = JSON.stringify({ eventType, mediaId, downloadId: payload.downloadId, episodeFile: objectId(payload.episodeFile), movieFile: objectId(payload.movieFile) });
+  const mediaIds = provider === "sonarr" ? sonarrMediaIds(payload) : radarrMediaIds(payload);
+  const stable = JSON.stringify({ eventType, mediaIds, downloadId: payload.downloadId, episodeFile: objectId(payload.episodeFile), movieFile: objectId(payload.movieFile) });
   const eventId = crypto.createHash("sha256").update(stable).digest("hex");
-  return { provider, eventId, eventType, mediaId, payload };
+  return { provider, eventId, eventType, mediaIds, payload };
 }
 
-function sonarrMediaId(payload: Record<string, unknown>): string | undefined {
+function sonarrMediaIds(payload: Record<string, unknown>): string[] {
+  const mediaIds: string[] = [];
   if (Array.isArray(payload.episodes)) {
-    const id = objectId(payload.episodes[0]);
-    if (id !== undefined) return `episode:${id}`;
+    for (const episode of payload.episodes) {
+      const id = objectId(episode);
+      if (id !== undefined) mediaIds.push(`episode:${id}`);
+    }
   }
   const seriesId = objectId(payload.series);
-  return seriesId === undefined ? undefined : `series:${seriesId}`;
+  if (seriesId !== undefined) mediaIds.push(`series:${seriesId}`);
+  return [...new Set(mediaIds)];
 }
 
-function radarrMediaId(payload: Record<string, unknown>): string | undefined {
+function radarrMediaIds(payload: Record<string, unknown>): string[] {
   const id = objectId(payload.movie);
-  return id === undefined ? undefined : `movie:${id}`;
+  return id === undefined ? [] : [`movie:${id}`];
 }
 
 function objectId(value: unknown): string | number | undefined {

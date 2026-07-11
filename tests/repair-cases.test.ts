@@ -76,6 +76,17 @@ test("inbound events match provider, event type, and media and are deduplicated"
     duplicate: true,
     matchedCaseIds: [],
   });
+
+  const series = store.create(caseParams("series-match"));
+  store.setWake(series.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "series:1480" });
+  const hierarchical = store.receiveEvent({
+    provider: "sonarr",
+    eventId: "evt-hierarchical",
+    eventType: "download",
+    mediaIds: ["episode:152122", "series:1480"],
+  });
+  assert.deepEqual(hierarchical.matchedCaseIds, [series.id]);
+  assert.equal(store.get(series.id)?.status, "ready");
 });
 
 test("service runs cases fairly within concurrency, and waiting cases consume no slot", async (t) => {
