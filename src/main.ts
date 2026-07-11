@@ -30,7 +30,7 @@ const agent = new PiAgentService(config, settings, logger);
 const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal) => agent.runToolAgentTask(task, roles, signal), logger);
 agent.setToolAgentQueue(toolAgentQueue);
 toolAgentQueue.recover();
-const discord = new DiscordBotService(settings, conversations, logger, repairCases);
+const discord = new DiscordBotService(settings, conversations, logger, repairCases, (request) => agent.generateRepairCaseTitle(request));
 const repairCaseService = new RepairCaseService(repairCases, {
   logger,
   onRunStart: (repairCase) => discord.startRepairCaseActivity(repairCase),

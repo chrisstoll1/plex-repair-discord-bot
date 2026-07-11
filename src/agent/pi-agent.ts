@@ -17,7 +17,7 @@ import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import { createMediaClients } from "../services/service-factory.js";
-import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -284,6 +284,24 @@ export class PiAgentService {
         thinkingLevel: "minimal",
         signal: controller.signal,
       });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async generateRepairCaseTitle(request: string): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("Repair title generation timed out")), 20_000);
+    timeout.unref?.();
+    try {
+      const title = await this.runAgentSession({
+        systemPrompt: REPAIR_CASE_TITLE_INSTRUCTIONS,
+        prompt: `User request:\n${request}`,
+        tools: [],
+        thinkingLevel: "minimal",
+        signal: controller.signal,
+      });
+      return normalizeRepairTitle(title);
     } finally {
       clearTimeout(timeout);
     }
@@ -1500,6 +1518,11 @@ function toolResponse(results: unknown) {
 
 function normalizeEventType(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizeRepairTitle(value: string): string {
+  const normalized = value.replace(/[\r\n]+/g, " ").replace(/^["'`]+|["'`]+$/g, "").replace(/\s+/g, " ").trim();
+  return (normalized || "Media repair").slice(0, 70);
 }
 
 function formatCaseTranscript(messages: Array<{ role: string; content: string; userId?: string; createdAt: string }>): string {

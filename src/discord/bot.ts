@@ -18,6 +18,7 @@ export class DiscordBotService {
     private readonly conversations: ConversationStore,
     private readonly logger: Logger,
     private readonly repairCases?: RepairCaseStore,
+    private readonly generateRepairTitle?: (request: string) => Promise<string>,
   ) {}
 
   setRepairCaseService(service: RepairCaseService): void {
@@ -175,7 +176,7 @@ export class DiscordBotService {
     try {
       if (existingCase) {
         this.repairCases.setAuthorizationActor(existingCase.id, message.author.id);
-        await this.startRepairIndicators(existingCase.id, message, message.channel);
+        await this.startRepairCaseActivity(existingCase);
         this.repairCaseService.notifyNewMessage(existingCase.id, {
           content,
           sourceMessageId: message.id,
@@ -187,11 +188,12 @@ export class DiscordBotService {
       }
 
       let threadId = message.channelId;
+      const title = await this.createRepairTitle(content);
       if (message.guildId) {
         const thread = message.channel.isThread()
           ? message.channel
           : await message.startThread({
-              name: repairThreadName(content),
+              name: title,
               autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
               reason: "Plex Repairman issue thread",
             });
@@ -203,7 +205,7 @@ export class DiscordBotService {
         source: message.id,
         userId: message.author.id,
         authorizationActor: message.author.id,
-        title: repairThreadName(content),
+        title,
         objective: content,
       });
       const targetChannel = message.guildId ? await message.client.channels.fetch(threadId) : message.channel;
@@ -226,7 +228,7 @@ export class DiscordBotService {
   private async startRepairIndicators(caseId: string, message: Message, typingChannel: Message["channel"]): Promise<void> {
     this.repairIndicators.get(caseId)?.stop();
     const reactions = new MessageReactionTracker(message, readRuntimeSettings(this.store).discord.reactionsEnabled, this.logger);
-    await reactions.set(selectInitialReaction(message.content));
+    await reactions.reset(selectInitialReaction(message.content));
     const typing = startTypingRefreshForChannel(typingChannel, this.logger, message.id);
     const progress = startReactionProgress(reactions, message.content);
     this.repairIndicators.set(caseId, {
@@ -236,6 +238,16 @@ export class DiscordBotService {
         progress.stop();
       },
     });
+  }
+
+  private async createRepairTitle(content: string): Promise<string> {
+    try {
+      const generated = await this.generateRepairTitle?.(content);
+      if (generated?.trim()) return generated.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 70);
+    } catch (error) {
+      this.logger.warn({ err: error }, "Failed to generate repair thread title");
+    }
+    return "Media repair";
   }
 
   private async settleRepairIndicators(repairCase: RepairCase): Promise<void> {
@@ -272,11 +284,6 @@ type RepairIndicators = {
   reactions: MessageReactionTracker;
   stop: () => void;
 };
-
-function repairThreadName(content: string): string {
-  const normalized = content.replace(/\s+/g, " ").trim();
-  return (normalized || "Media repair").slice(0, 90);
-}
 
 export class KeyedSerialQueue {
   private readonly tails = new Map<string, Promise<void>>();
@@ -347,6 +354,25 @@ class MessageReactionTracker {
         this.logger.debug({ err: error, messageId: this.message.id, emoji }, "Failed to update Discord reaction");
       });
 
+    await this.chain;
+  }
+
+  async reset(emoji: string): Promise<void> {
+    if (!this.enabled) return;
+    this.chain = this.chain
+      .then(async () => {
+        const botUserId = this.message.client.user?.id;
+        if (botUserId) {
+          for (const reaction of this.message.reactions.cache.values()) {
+            if (reaction.me) await reaction.users.remove(botUserId);
+          }
+        }
+        this.currentEmoji = undefined;
+        await this.apply(emoji);
+      })
+      .catch((error) => {
+        this.logger.debug({ err: error, messageId: this.message.id, emoji }, "Failed to reset Discord reaction");
+      });
     await this.chain;
   }
 
