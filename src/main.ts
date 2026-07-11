@@ -67,7 +67,7 @@ const repairCaseService = new RepairCaseService(repairCases, {
         conversationKey: `repair:${repairCase.id}`,
         sourceMessageId: repairCase.source,
         onProgress: async (update) => {
-          if (update.type === "tasks_started") await runContext.progress(update.message?.trim() || "I’m checking the most likely causes now and will keep you updated.");
+          if (update.type === "tasks_started" && update.message?.trim()) await runContext.progress(update.message.trim());
         },
       },
       webhookProviders,
@@ -99,6 +99,13 @@ const repairCaseService = new RepairCaseService(repairCases, {
       deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:finish` }],
     };
   },
+  onSystemEvent: async (repairCase, event) => agent.generateRepairCaseStatus({
+    objective: repairCase.objective,
+    checkpoint: repairCase.checkpoint,
+    event: event.type,
+    details: event.details,
+    recentMessages: repairCases.listMessages(repairCase.id).slice(-12).map((message) => ({ role: message.role, content: message.content })),
+  }),
   onDelivery: (delivery, repairCase) => discord.deliverRepairMessage(delivery, repairCase),
 });
 discord.setRepairCaseService(repairCaseService);

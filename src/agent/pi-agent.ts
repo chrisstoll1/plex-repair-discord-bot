@@ -17,7 +17,7 @@ import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import { createMediaClients } from "../services/service-factory.js";
-import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -258,6 +258,37 @@ export class PiAgentService {
     return { response, control };
   }
 
+  async generateRepairCaseStatus(params: {
+    objective: string;
+    checkpoint?: unknown;
+    event: "timeout_continuing" | "runner_error" | "unexpected_end" | "attempts_exhausted";
+    details?: unknown;
+    recentMessages: Array<{ role: string; content: string }>;
+  }): Promise<string> {
+    const settings = readRuntimeSettings(this.store);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error("Repair status generation timed out")), 30_000);
+    timeout.unref?.();
+    const prompt = [
+      `Repair objective: ${params.objective}`,
+      `Runtime event: ${params.event}`,
+      params.checkpoint === undefined ? undefined : `Saved progress: ${JSON.stringify(params.checkpoint)}`,
+      params.details === undefined ? undefined : `Event details: ${JSON.stringify(params.details)}`,
+      `Recent conversation:\n${params.recentMessages.slice(-12).map((message) => `${message.role}: ${message.content}`).join("\n")}`,
+    ].filter(Boolean).join("\n\n");
+    try {
+      return await this.runAgentSession({
+        systemPrompt: REPAIR_CASE_STATUS_INSTRUCTIONS,
+        prompt,
+        tools: [],
+        thinkingLevel: "minimal",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async shutdown(): Promise<void> {
     this.stopping = true;
     for (const controller of this.coordinatorControllers) controller.abort(new Error("Plex Repairman is shutting down"));
@@ -347,7 +378,9 @@ export class PiAgentService {
     try {
       if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
       await session.prompt(params.prompt);
-      return output.trim() || "I completed the request but did not produce a text response.";
+      const response = output.trim();
+      if (!response) throw new Error("Agent session completed without a response");
+      return response;
     } finally {
       unsubscribe();
       params.signal?.removeEventListener("abort", abortSession);
@@ -621,6 +654,16 @@ export class PiAgentService {
         parameters: Type.Object({}),
         execute: async () => {
           const results = await clients().plex.getLibrarySections();
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_plex_metadata_children",
+        label: "Get Plex metadata children",
+        description: "List seasons or episodes directly beneath a Plex metadata item by rating key. Use this instead of title search to verify exact episode availability after locating a show.",
+        parameters: Type.Object({ ratingKey: Type.String({ description: "Plex ratingKey for a show, season, or other metadata item" }) }),
+        execute: async (_toolCallId, params: { ratingKey: string }) => {
+          const results = await clients().plex.getMetadataChildren(params.ratingKey);
           return toolResponse(results);
         },
       }),
@@ -910,16 +953,17 @@ export class PiAgentService {
         description: "Trigger Plex to scan/refresh a specific library section by section ID. Requires confirmation when configured.",
         parameters: Type.Object({
           sectionId: Type.Number({ description: "Plex library section ID, from list_plex_libraries" }),
+          path: Type.Optional(Type.String({ description: "Optional media folder path for a targeted Plex scan" })),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
-        execute: async (_toolCallId, params: { sectionId: number; confirmed?: boolean }) => {
+        execute: async (_toolCallId, params: { sectionId: number; path?: string; confirmed?: boolean }) => {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
             action: `Refresh Plex library section ID ${params.sectionId}`,
             confirmed: params.confirmed,
           });
           if (policy) return policy;
 
-          const results = await clients().plex.refreshLibrarySection(params.sectionId);
+          const results = await clients().plex.refreshLibrarySection(params.sectionId, params.path);
           return toolResponse(results);
         },
       }),

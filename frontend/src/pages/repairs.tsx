@@ -31,6 +31,7 @@ const statusCopy: Record<RepairCaseStatus, string> = {
 };
 
 const terminalStatuses = new Set<RepairCaseStatus>(["resolved", "exhausted", "cancelled"]);
+const activeStatuses = new Set<RepairCaseStatus>(["working", "waiting", "ready", "verifying"]);
 
 export function RepairsPage() {
   const toast = useToast();
@@ -41,7 +42,7 @@ export function RepairsPage() {
   const repairs = useQuery({
     queryKey: ["repairs"],
     queryFn: api.getRepairs,
-    refetchInterval: (query) => document.visibilityState === "visible" && query.state.data?.some((repair) => !terminalStatuses.has(repair.status)) ? 3_000 : false,
+    refetchInterval: (query) => document.visibilityState === "visible" && query.state.data?.some((repair) => activeStatuses.has(repair.status)) ? 3_000 : false,
     refetchIntervalInBackground: false,
   });
   const activity = useQuery({ queryKey: ["repair-activity", selectedId], queryFn: () => api.getRepairActivity(selectedId!), enabled: !!selectedId });
@@ -65,7 +66,7 @@ export function RepairsPage() {
   if (repairs.isError) return <><PageHeader eyebrow="Repair queue" title="Ongoing Repairs" description="Follow repair progress and intervene when a case needs help." /><ErrorState error={repairs.error} retry={() => repairs.refetch()} /></>;
 
   const selected = repairs.data.find((repair) => repair.id === selectedId);
-  const activeCount = repairs.data.filter((repair) => !terminalStatuses.has(repair.status)).length;
+  const activeCount = repairs.data.filter((repair) => activeStatuses.has(repair.status)).length;
   const visibleGroups = filter === "all" ? groups : groups.filter((group) => group.id === filter);
   return <>
     <PageHeader eyebrow="Repair queue" title="Ongoing Repairs" description="Follow repair progress, see what happens next, and intervene when a case needs help." actions={<Button variant="secondary" onClick={() => repairs.refetch()} disabled={repairs.isFetching}><RefreshCw className={`h-4 w-4 ${repairs.isFetching ? "animate-spin" : ""}`} />Refresh</Button>} />

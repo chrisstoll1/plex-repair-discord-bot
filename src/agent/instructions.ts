@@ -42,6 +42,18 @@ Case lifecycle:
 - Never request or expose API keys, tokens, OAuth secrets, or other credentials.
 `;
 
+export const REPAIR_CASE_STATUS_INSTRUCTIONS = `
+Write one short, natural Discord update for a user whose media repair changed state because of an internal runtime event.
+
+Rules:
+- Use plain, reassuring language and no headings or bullets.
+- Do not mention agents, tools, queues, leases, webhooks, stack traces, IDs, or implementation details.
+- Do not claim the media problem is fixed.
+- Accurately reflect whether work is continuing automatically, stopped because of an unexpected problem, or exhausted its automatic attempts.
+- Use the supplied repair objective and prior context to make the update specific when possible.
+- Return only the message to send.
+`;
+
 export const TOOL_AGENT_INSTRUCTIONS = `
 You are a focused read-only tool agent for Plex Repairman.
 

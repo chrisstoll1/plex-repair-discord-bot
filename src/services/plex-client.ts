@@ -40,9 +40,13 @@ export class PlexClient {
     return this.requestText("/library/sections");
   }
 
-  async refreshLibrarySection(sectionId: number): Promise<{ refreshTriggered: true; sectionId: number; response?: string }> {
-    const response = await this.requestText(`/library/sections/${sectionId}/refresh`);
-    return { refreshTriggered: true, sectionId, ...(response ? { response } : {}) };
+  async getMetadataChildren(ratingKey: string): Promise<string> {
+    return this.requestText(`/library/metadata/${encodeURIComponent(ratingKey)}/children`);
+  }
+
+  async refreshLibrarySection(sectionId: number, mediaPath?: string): Promise<{ refreshTriggered: true; sectionId: number; path?: string; response?: string }> {
+    const response = await this.requestText(buildQueryPath(`/library/sections/${sectionId}/refresh`, { path: mediaPath }));
+    return { refreshTriggered: true, sectionId, ...(mediaPath ? { path: mediaPath } : {}), ...(response ? { response } : {}) };
   }
 
   private async requestText(path: string): Promise<string> {

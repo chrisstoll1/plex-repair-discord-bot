@@ -36,7 +36,7 @@ const RADARR_READ_TOOLS = [
   "get_radarr_movie_file",
 ] as const;
 
-const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_service_health"] as const;
+const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_plex_metadata_children", "get_service_health"] as const;
 
 const SONARR_WRITE_TOOLS = [
   "trigger_sonarr_series_search",

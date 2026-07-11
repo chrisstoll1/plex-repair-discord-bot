@@ -28,11 +28,17 @@ export type RepairCaseRunResult = {
 export type RepairCaseRunner = (repairCase: RepairCase, context: RepairCaseRunContext) => Promise<RepairCaseRunResult | void>;
 export type RepairCaseProgressCallback = (repairCase: RepairCase, progress: unknown) => Promise<void> | void;
 export type RepairCaseDeliveryCallback = (delivery: RepairCaseOutboxItem, repairCase: RepairCase) => Promise<void> | void;
+export type RepairCaseSystemEvent = {
+  type: "timeout_continuing" | "runner_error" | "unexpected_end" | "attempts_exhausted";
+  details?: unknown;
+};
+export type RepairCaseSystemEventCallback = (repairCase: RepairCase, event: RepairCaseSystemEvent) => Promise<string | undefined> | string | undefined;
 
 export type RepairCaseServiceOptions = {
   runner: RepairCaseRunner;
   onProgress?: RepairCaseProgressCallback;
   onDelivery?: RepairCaseDeliveryCallback;
+  onSystemEvent?: RepairCaseSystemEventCallback;
   maxConcurrent?: number;
   leaseMs?: number;
   maxRuntimeMs?: number;
@@ -40,8 +46,8 @@ export type RepairCaseServiceOptions = {
   logger?: Logger;
 };
 
-const DEFAULT_LEASE_MS = 10 * 60_000;
-const DEFAULT_RUNTIME_MS = 9 * 60_000;
+const DEFAULT_LEASE_MS = 31 * 60_000;
+const DEFAULT_RUNTIME_MS = 30 * 60_000;
 
 /** Single-process scheduler. Durable ownership and all queue state remain in SQLite. */
 export class RepairCaseService {
@@ -171,7 +177,7 @@ export class RepairCaseService {
     if (!repairCase) {
       const current = this.store.get(id);
       if (current?.status === "exhausted") {
-        this.store.enqueueDelivery(id, "discord_message", { content: "I couldn’t finish this automatically after several attempts. The repair history is saved, but I need someone to review what to try next." }, { dedupeKey: `${id}:exhausted` });
+        await this.reportSystemEvent(current, { type: "attempts_exhausted" }, `${id}:exhausted`);
         await this.flushDeliveries();
       }
       return;
@@ -201,7 +207,18 @@ export class RepairCaseService {
         },
       });
       const current = this.store.get(id);
-      if (!current || current.leaseOwner !== this.ownerId || controller.signal.aborted) return;
+      if (!current || current.leaseOwner !== this.ownerId) return;
+      if (controller.signal.aborted) {
+        if (this.stopping) {
+          this.store.releaseLease(id, this.ownerId, "ready");
+        } else if (timedOut) {
+          this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
+          await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
+          await this.flushDeliveries();
+          runAgain = true;
+        }
+        return;
+      }
       if (this.pendingMessages.delete(id)) {
         this.store.addActivity(id, "rerun_requested", { reason: "new_thread_message" }, this.ownerId);
         this.store.releaseLease(id, this.ownerId, "ready");
@@ -224,16 +241,25 @@ export class RepairCaseService {
       if (current?.leaseOwner !== this.ownerId) return;
       if (this.stopping) this.store.releaseLease(id, this.ownerId, "ready");
       else if (timedOut) {
-        this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details: { error: "runner_timeout" } });
-        this.store.enqueueDelivery(id, "discord_message", { content: "I ran into a timeout while working on this. I saved the progress so it can be resumed instead of starting over." }, { dedupeKey: `${id}:attempt:${current.attempts}:timeout` });
+        this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
+        await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
+        runAgain = true;
       } else if (!controller.signal.aborted) {
-        this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details: { error: error instanceof Error ? error.message : String(error) } });
-        this.store.enqueueDelivery(id, "discord_message", { content: "I hit a problem and can’t safely continue automatically right now. The work so far is saved for review or another attempt." }, { dedupeKey: `${id}:attempt:${current.attempts}:error` });
+        const details = { error: error instanceof Error ? error.message : String(error) };
+        this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details });
+        await this.reportSystemEvent(this.store.get(id)!, { type: "runner_error", details }, `${id}:attempt:${current.attempts}:error`);
       }
     } finally {
       clearTimeout(timeout);
       const current = this.store.get(id);
-      if (current?.leaseOwner === this.ownerId) this.store.releaseLease(id, this.ownerId, this.stopping ? "ready" : "blocked");
+      if (current?.leaseOwner === this.ownerId) {
+        if (this.stopping) {
+          this.store.releaseLease(id, this.ownerId, "ready");
+        } else {
+          this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details: { error: "runner_ended_without_state" } });
+          await this.reportSystemEvent(this.store.get(id)!, { type: "unexpected_end" }, `${id}:attempt:${current.attempts}:unexpected-end`);
+        }
+      }
       this.controllers.delete(id);
       if (runAgain && !this.stopping) this.enqueue(id);
       void this.flushDeliveries();
@@ -253,6 +279,18 @@ export class RepairCaseService {
         this.store.settleDelivery(delivery.id, false, error instanceof Error ? error.message : String(error));
         this.options.logger?.error({ error, deliveryId: delivery.id }, "Repair case delivery failed");
       }
+    }
+  }
+
+  private async reportSystemEvent(repairCase: RepairCase, event: RepairCaseSystemEvent, dedupeKey: string): Promise<void> {
+    if (!this.options.onSystemEvent) return;
+    try {
+      const content = (await this.options.onSystemEvent(repairCase, event))?.trim();
+      if (!content) return;
+      this.store.addActivity(repairCase.id, "user_update", { message: content, event: event.type }, this.ownerId);
+      this.store.enqueueDelivery(repairCase.id, "discord_message", { content }, { dedupeKey });
+    } catch (error) {
+      this.options.logger?.warn({ error, caseId: repairCase.id, event: event.type }, "Failed to generate repair case status update");
     }
   }
 

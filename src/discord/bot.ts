@@ -256,7 +256,6 @@ export class DiscordBotService {
       }
 
       let threadId = message.channelId;
-      let sendAcknowledgement: (content: string) => Promise<{ id: string }>;
       if (message.guildId) {
         const thread = message.channel.isThread()
           ? message.channel
@@ -266,11 +265,6 @@ export class DiscordBotService {
               reason: "Plex Repairman issue thread",
             });
         threadId = thread.id;
-        sendAcknowledgement = async (value) => thread.send({ content: value, allowedMentions: { parse: [] } });
-      } else {
-        if (!("send" in message.channel)) throw new Error("Discord channel cannot receive repair updates");
-        const channel = message.channel;
-        sendAcknowledgement = async (value) => channel.send({ content: value, allowedMentions: { parse: [] } });
       }
       const repairCase = this.repairCases.create({
         guildId: message.guildId ?? "",
@@ -281,10 +275,6 @@ export class DiscordBotService {
         title: repairThreadName(content),
         objective: content,
       });
-      const acknowledgement = "I’m looking into this now. I’ll keep this thread updated and continue automatically if anything needs time to finish.";
-      const sent = await sendAcknowledgement(acknowledgement);
-      this.repairCases.addMessage(repairCase.id, { role: "assistant", content: acknowledgement, sourceMessageId: sent.id });
-      this.repairCases.addActivity(repairCase.id, "user_update", { message: acknowledgement }, "discord");
       this.repairCaseService.notifyNewMessage(repairCase.id, {
         content,
         sourceMessageId: message.id,

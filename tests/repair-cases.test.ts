@@ -145,6 +145,33 @@ test("service recovers expired leases, receives events, and cancels running work
   await service.shutdown();
 });
 
+test("runner timeout remains visible and automatically continues when an aborted runner resolves normally", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("timeout-visible"));
+  const delivered: unknown[] = [];
+  let runs = 0;
+  const service = new RepairCaseService(store, {
+    leaseMs: 100,
+    maxRuntimeMs: 5,
+    runner: async (_current, context) => {
+      runs += 1;
+      if (runs > 1) return { status: "resolved" };
+      await waitForAbort(context.signal);
+      return { status: "resolved" };
+    },
+    onSystemEvent: async (_current, event) => event.type === "timeout_continuing" ? "Generated continuation update" : undefined,
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  await waitUntil(() => delivered.length === 1);
+  assert.equal(store.get(repairCase.id)?.attempts, 2);
+  assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "user_update" && (entry.details as { event?: string }).event === "timeout_continuing"), true);
+  assert.match(JSON.stringify(delivered[0]), /Generated continuation update/);
+  await service.shutdown();
+});
+
 function caseParams(title: string): CreateRepairCase {
   return {
     id: title,
