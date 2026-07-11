@@ -27,6 +27,7 @@ export type RepairCaseRunResult = {
 
 export type RepairCaseRunner = (repairCase: RepairCase, context: RepairCaseRunContext) => Promise<RepairCaseRunResult | void>;
 export type RepairCaseProgressCallback = (repairCase: RepairCase, progress: unknown) => Promise<void> | void;
+export type RepairCaseRunStartCallback = (repairCase: RepairCase) => Promise<void> | void;
 export type RepairCaseDeliveryCallback = (delivery: RepairCaseOutboxItem, repairCase: RepairCase) => Promise<void> | void;
 export type RepairCaseSystemEvent = {
   type: "timeout_continuing" | "runner_error" | "unexpected_end" | "attempts_exhausted";
@@ -37,6 +38,7 @@ export type RepairCaseSystemEventCallback = (repairCase: RepairCase, event: Repa
 export type RepairCaseServiceOptions = {
   runner: RepairCaseRunner;
   onProgress?: RepairCaseProgressCallback;
+  onRunStart?: RepairCaseRunStartCallback;
   onDelivery?: RepairCaseDeliveryCallback;
   onSystemEvent?: RepairCaseSystemEventCallback;
   maxConcurrent?: number;
@@ -196,6 +198,11 @@ export class RepairCaseService {
     timeout.unref?.();
 
     try {
+      try {
+        await this.options.onRunStart?.(repairCase);
+      } catch (error) {
+        this.options.logger?.warn({ error, caseId: id }, "Failed to start repair case indicators");
+      }
       const result = await this.options.runner(repairCase, {
         messages: this.store.listMessages(id),
         signal: controller.signal,

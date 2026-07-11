@@ -12,6 +12,7 @@ export class DiscordBotService {
   private client: Client | undefined;
   private readonly conversationQueue = new KeyedSerialQueue();
   private readonly processingMessageIds = new Set<string>();
+  private readonly repairIndicators = new Map<string, RepairIndicators>();
   private repairCaseService?: RepairCaseService;
 
   constructor(
@@ -197,6 +198,8 @@ export class DiscordBotService {
   }
 
   async restart(): Promise<void> {
+    for (const indicators of this.repairIndicators.values()) indicators.stop();
+    this.repairIndicators.clear();
     if (this.client) {
       await this.client.destroy();
       this.client = undefined;
@@ -205,6 +208,8 @@ export class DiscordBotService {
   }
 
   async stop(): Promise<void> {
+    for (const indicators of this.repairIndicators.values()) indicators.stop();
+    this.repairIndicators.clear();
     await this.client?.destroy();
   }
 
@@ -229,6 +234,21 @@ export class DiscordBotService {
     if (channel.isThread() && channel.archived && !channel.locked) await channel.setArchived(false, "Repair work resumed");
     const sent = await channel.send({ content: truncateDiscord(content), allowedMentions: { parse: [] } });
     this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: truncateDiscord(content), sourceMessageId: sent.id });
+    await this.settleRepairIndicators(repairCase);
+  }
+
+  async startRepairCaseActivity(repairCase: RepairCase): Promise<void> {
+    if (!this.client || this.repairIndicators.has(repairCase.id)) return;
+    const channel = await this.client.channels.fetch(repairCase.threadId);
+    if (!channel?.isTextBased()) return;
+    let sourceMessage: Message | undefined;
+    if (channel.isThread()) {
+      sourceMessage = await channel.fetchStarterMessage() ?? undefined;
+    } else if ("messages" in channel) {
+      sourceMessage = await channel.messages.fetch(repairCase.source).catch(() => undefined);
+    }
+    if (!sourceMessage) return;
+    await this.startRepairIndicators(repairCase.id, sourceMessage, channel);
   }
 
   private findRepairCase(guildId: string, threadId: string): RepairCase | undefined {
@@ -244,6 +264,7 @@ export class DiscordBotService {
     try {
       if (existingCase) {
         this.repairCases.setAuthorizationActor(existingCase.id, message.author.id);
+        await this.startRepairIndicators(existingCase.id, message, message.channel);
         this.repairCaseService.notifyNewMessage(existingCase.id, {
           content,
           sourceMessageId: message.id,
@@ -274,6 +295,8 @@ export class DiscordBotService {
         title: repairThreadName(content),
         objective: content,
       });
+      const targetChannel = message.guildId ? await message.client.channels.fetch(threadId) : message.channel;
+      await this.startRepairIndicators(repairCase.id, message, targetChannel?.isTextBased() ? targetChannel : message.channel);
       this.repairCaseService.notifyNewMessage(repairCase.id, {
         content,
         sourceMessageId: message.id,
@@ -289,6 +312,37 @@ export class DiscordBotService {
     }
   }
 
+  private async startRepairIndicators(caseId: string, message: Message, typingChannel: Message["channel"]): Promise<void> {
+    this.repairIndicators.get(caseId)?.stop();
+    const reactions = new MessageReactionTracker(message, readRuntimeSettings(this.store).discord.reactionsEnabled, this.logger);
+    await reactions.set(selectInitialReaction(message.content));
+    const typing = startTypingRefreshForChannel(typingChannel, this.logger, message.id);
+    const progress = startReactionProgress(reactions, message.content);
+    this.repairIndicators.set(caseId, {
+      reactions,
+      stop: () => {
+        typing.stop();
+        progress.stop();
+      },
+    });
+  }
+
+  private async settleRepairIndicators(repairCase: RepairCase): Promise<void> {
+    if (["working", "ready", "verifying"].includes(repairCase.status)) return;
+    const indicators = this.repairIndicators.get(repairCase.id);
+    if (!indicators) return;
+    indicators.stop();
+    this.repairIndicators.delete(repairCase.id);
+    const emoji = repairCase.status === "resolved"
+      ? "✅"
+      : repairCase.status === "waiting"
+        ? "⏳"
+        : repairCase.status === "cancelled"
+          ? "⛔"
+          : "⚠️";
+    await indicators.reactions.set(emoji);
+  }
+
   private async registerHealthCommand(token: string, applicationId?: string): Promise<void> {
     if (!applicationId) return;
 
@@ -302,6 +356,11 @@ export class DiscordBotService {
     }
   }
 }
+
+type RepairIndicators = {
+  reactions: MessageReactionTracker;
+  stop: () => void;
+};
 
 function repairThreadName(content: string): string {
   const normalized = content.replace(/\s+/g, " ").trim();
@@ -400,14 +459,18 @@ class MessageReactionTracker {
 }
 
 function startTypingRefresh(message: Message, logger: Logger): { stop: () => void } {
+  return startTypingRefreshForChannel(message.channel, logger, message.id);
+}
+
+function startTypingRefreshForChannel(channel: Message["channel"], logger: Logger, contextId: string): { stop: () => void } {
   let stopped = false;
 
   const send = async () => {
     try {
-      if (!canSendTyping(message.channel)) return;
-      await message.channel.sendTyping();
+      if (!canSendTyping(channel)) return;
+      await channel.sendTyping();
     } catch (error) {
-      logger.debug({ err: error, messageId: message.id }, "Failed to refresh Discord typing indicator");
+      logger.debug({ err: error, contextId }, "Failed to refresh Discord typing indicator");
     }
   };
 

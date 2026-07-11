@@ -34,6 +34,7 @@ toolAgentQueue.recover();
 const discord = new DiscordBotService(settings, conversations, agent, logger, repairCases);
 const repairCaseService = new RepairCaseService(repairCases, {
   logger,
+  onRunStart: (repairCase) => discord.startRepairCaseActivity(repairCase),
   runner: async (repairCase, runContext) => {
     const latestMessage = [...runContext.messages].reverse().find((message) => message.role === "user");
     const metadata = latestMessage?.metadata && typeof latestMessage.metadata === "object" ? latestMessage.metadata as { userId?: string; roles?: string[] } : {};
