@@ -13,7 +13,6 @@ import { RepairCaseStore } from "./storage/repair-cases.js";
 import { SecretBox } from "./storage/secrets.js";
 import { SettingsStore } from "./storage/settings.js";
 import { createWebServer } from "./web/server.js";
-import { readRuntimeSettings } from "./domain/settings.js";
 
 const config = loadConfig();
 fs.mkdirSync(config.configDir, { recursive: true });
@@ -31,7 +30,7 @@ const agent = new PiAgentService(config, settings, logger);
 const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal) => agent.runToolAgentTask(task, roles, signal), logger);
 agent.setToolAgentQueue(toolAgentQueue);
 toolAgentQueue.recover();
-const discord = new DiscordBotService(settings, conversations, agent, logger, repairCases);
+const discord = new DiscordBotService(settings, conversations, logger, repairCases);
 const repairCaseService = new RepairCaseService(repairCases, {
   logger,
   onRunStart: (repairCase) => discord.startRepairCaseActivity(repairCase),
@@ -114,9 +113,9 @@ repairCaseService.start();
 
 const pruneConversations = () => {
   try {
-    conversations.prune(readRuntimeSettings(settings).memory.ttlHours);
+    conversations.prune(24);
   } catch (error) {
-    logger.warn({ err: error }, "Failed to prune expired conversation memory");
+    logger.warn({ err: error }, "Failed to prune processed Discord message history");
   }
 };
 pruneConversations();
@@ -125,7 +124,7 @@ conversationPruneTimer.unref();
 
 await discord.start();
 
-const web = await createWebServer(settings, conversations, toolAgentQueue, discord, piAuth, logger, undefined, repairCases, repairCaseService);
+const web = await createWebServer(settings, toolAgentQueue, discord, piAuth, logger, undefined, repairCases, repairCaseService);
 await web.listen({ host: config.httpHost, port: config.httpPort });
 
 logger.info({ host: config.httpHost, port: config.httpPort, configDir: config.configDir }, "Plex Repairman started");

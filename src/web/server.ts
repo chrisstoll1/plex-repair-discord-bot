@@ -7,7 +7,6 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import {
   aiSettingsSchema,
-  memorySettingsSchema,
   readRuntimeSettings,
   repairSettingsSchema,
   timeoutSettingsSchema,
@@ -15,7 +14,6 @@ import {
 } from "../domain/settings.js";
 import { createMediaClients } from "../services/service-factory.js";
 import type { SettingsStore, SettingsWriter } from "../storage/settings.js";
-import type { ConversationStore } from "../storage/conversation.js";
 import type { ToolAgentQueueService } from "../agent/tool-agent-queue.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { DiscordBotService } from "../discord/bot.js";
@@ -54,15 +52,6 @@ const settingsUpdateSchema = z
         thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
       })
       .strict(),
-    memory: z
-      .object({
-        enabled: z.boolean(),
-        scope: z.enum(["channel_user", "channel"]),
-        maxMessages: z.number().int().min(0).max(50),
-        ttlHours: z.number().int().min(1).max(720),
-        includeBotReplies: z.boolean(),
-      })
-      .strict(),
     timeouts: z
       .object({
         standardSeconds: z.number().int().min(5).max(600),
@@ -73,7 +62,6 @@ const settingsUpdateSchema = z
   })
   .strict();
 
-const deleteSessionSchema = z.object({ conversationKey: nonEmptyTrimmedString }).strict();
 const taskParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
 const taskQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict();
 const repairParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
@@ -95,7 +83,6 @@ type ServiceStatus = {
 
 export async function createWebServer(
   store: SettingsStore,
-  conversations: ConversationStore,
   toolAgentQueue: ToolAgentQueueService,
   discord: DiscordBotService,
   piAuth: PiAuthService,
@@ -146,7 +133,6 @@ export async function createWebServer(
 
   app.get("/api/status", async () => {
     const settings = readRuntimeSettings(store);
-    const activeMemorySessions = conversations.listSessions(settings.memory.ttlHours).length;
     const clients = createMediaClients(store, logger);
     const [piSnapshot, sonarr, radarr, plex] = await Promise.all([
       piAuth.refreshExpiredCredential(),
@@ -164,26 +150,9 @@ export async function createWebServer(
         sonarr,
         radarr,
         plex,
-        memoryStatus(settings, activeMemorySessions),
       ],
     };
   });
-
-  app.get("/api/memory/sessions", async () => {
-    const settings = readRuntimeSettings(store);
-    return { sessions: conversations.listSessions(settings.memory.ttlHours) };
-  });
-
-  app.delete("/api/memory/sessions", async (request, reply) => {
-    const body = parseOrReply(deleteSessionSchema, request.body, reply);
-    if (!body) return;
-    if (!conversations.deleteSession(body.conversationKey)) {
-      return sendError(reply, 404, "session_not_found", "Conversation session was not found.");
-    }
-    return { deleted: true, conversationKey: body.conversationKey };
-  });
-
-  app.delete("/api/memory/history", async () => ({ deleted: conversations.clearAll() }));
 
   app.get("/api/tasks", async (request, reply) => {
     const query = parseOrReply(taskQuerySchema, request.query, reply);
@@ -207,6 +176,13 @@ export async function createWebServer(
 
   app.get("/api/repairs", async () => ({ repairs: repairCases?.list({ limit: 500 }).map((repairCase) => publicRepairCase(repairCase, repairCases)) ?? [] }));
 
+  app.delete("/api/repairs/ongoing", async () => {
+    const ids = repairCases?.list({ statuses: ["working", "waiting", "ready", "verifying", "needs_input", "blocked"], limit: 1000 }).map((repairCase) => repairCase.id) ?? [];
+    const deleted = await repairCaseService?.clearOngoing("admin") ?? 0;
+    await Promise.all(ids.map((id) => discord.stopRepairCaseActivity(id)));
+    return { deleted };
+  });
+
   app.get("/api/repairs/:id/activity", async (request, reply) => {
     const params = parseOrReply(repairParamsSchema, request.params, reply);
     if (!params) return;
@@ -219,6 +195,7 @@ export async function createWebServer(
     if (!params) return;
     const repair = repairCaseService?.cancel(params.id, "admin");
     if (!repair) return sendError(reply, 404, "repair_not_found", "Repair was not found.");
+    await discord.stopRepairCaseActivity(repair.id);
     return { repair: publicRepairCase(repair, repairCases!) };
   });
 
@@ -389,7 +366,6 @@ function normalizeSettings(update: SettingsUpdate): SettingsUpdate {
   return {
     ...update,
     ai: aiSettingsSchema.pick({ modelProvider: true, modelId: true, thinkingLevel: true }).parse(update.ai),
-    memory: memorySettingsSchema.parse(update.memory),
     timeouts: timeoutSettingsSchema.parse(update.timeouts),
     repair: repairSettingsSchema.parse(update.repair),
   };
@@ -412,7 +388,6 @@ function writeSettings(writer: SettingsWriter, update: SettingsUpdate): void {
   applySecret(writer, "plex.token", update.plex.token);
 
   writer.setJson("ai", update.ai);
-  writer.setJson("memory", update.memory);
   writer.setJson("timeouts", update.timeouts);
   writer.setJson("repair", update.repair);
 }
@@ -441,7 +416,6 @@ function publicSettings(settings: RuntimeSettings) {
       modelId: settings.ai.modelId,
       thinkingLevel: settings.ai.thinkingLevel,
     },
-    memory: settings.memory,
     timeouts: settings.timeouts,
     repair: settings.repair,
   };
@@ -467,17 +441,6 @@ function piAuthStatus(configured: boolean): ServiceStatus {
     state: configured ? "configured" : "missing",
     target: "OpenAI Codex",
     detail: configured ? "Codex auth is configured." : "Start login to connect Codex auth.",
-  };
-}
-
-function memoryStatus(settings: RuntimeSettings, activeSessions: number): ServiceStatus {
-  return {
-    name: "Memory",
-    state: settings.memory.enabled ? "configured" : "missing",
-    target: settings.memory.scope === "channel_user" ? "Channel/thread + user" : "Shared channel/thread",
-    detail: settings.memory.enabled
-      ? `${activeSessions} active session${activeSessions === 1 ? "" : "s"}; ${settings.memory.maxMessages} messages for ${settings.memory.ttlHours} hours.`
-      : "Conversation memory is disabled.",
   };
 }
 

@@ -28,14 +28,6 @@ export const aiSettingsSchema = z.object({
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
 });
 
-export const memorySettingsSchema = z.object({
-  enabled: z.boolean().default(true),
-  scope: z.enum(["channel_user", "channel"]).default("channel_user"),
-  maxMessages: z.coerce.number().int().min(0).max(50).default(10),
-  ttlHours: z.coerce.number().int().min(1).max(720).default(24),
-  includeBotReplies: z.boolean().default(true),
-});
-
 export const timeoutSettingsSchema = z.object({
   standardSeconds: z.coerce.number().int().min(5).max(600).default(60),
   releaseLookupSeconds: z.coerce.number().int().min(15).max(900).default(300),
@@ -50,7 +42,6 @@ export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
 export type ArrSettings = z.infer<typeof arrSettingsSchema>;
 export type PlexSettings = z.infer<typeof plexSettingsSchema>;
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
-export type MemorySettings = z.infer<typeof memorySettingsSchema>;
 export type TimeoutSettings = z.infer<typeof timeoutSettingsSchema>;
 export type RepairSettings = z.infer<typeof repairSettingsSchema>;
 
@@ -60,13 +51,11 @@ export type RuntimeSettings = {
   radarr: ArrSettings;
   plex: PlexSettings;
   ai: AiSettings;
-  memory: MemorySettings;
   timeouts: TimeoutSettings;
   repair: RepairSettings;
 };
 
 const DEFAULT_AI_SETTINGS = aiSettingsSchema.parse({});
-const DEFAULT_MEMORY_SETTINGS = memorySettingsSchema.parse({});
 const DEFAULT_TIMEOUT_SETTINGS = timeoutSettingsSchema.parse({});
 const DEFAULT_REPAIR_SETTINGS = repairSettingsSchema.parse({});
 
@@ -94,7 +83,6 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
       token: store.getString("plex.token") ?? "",
     },
     ai: readJsonSetting(store, "ai", aiSettingsSchema, DEFAULT_AI_SETTINGS),
-    memory: readJsonSetting(store, "memory", memorySettingsSchema, DEFAULT_MEMORY_SETTINGS),
     timeouts: readJsonSetting(store, "timeouts", timeoutSettingsSchema, DEFAULT_TIMEOUT_SETTINGS),
     repair: readJsonSetting(store, "repair", repairSettingsSchema, DEFAULT_REPAIR_SETTINGS),
   };

@@ -10,7 +10,6 @@ import "./styles.css";
 const OverviewPage = lazy(() => import("./pages/overview").then((module) => ({ default: module.OverviewPage })));
 const ConnectionsPage = lazy(() => import("./pages/connections").then((module) => ({ default: module.ConnectionsPage })));
 const BotSettingsPage = lazy(() => import("./pages/bot-settings").then((module) => ({ default: module.BotSettingsPage })));
-const MemoryPage = lazy(() => import("./pages/memory").then((module) => ({ default: module.MemoryPage })));
 const TasksPage = lazy(() => import("./pages/tasks").then((module) => ({ default: module.TasksPage })));
 const RepairsPage = lazy(() => import("./pages/repairs").then((module) => ({ default: module.RepairsPage })));
 
@@ -31,7 +30,6 @@ const router = createBrowserRouter([{
     { index: true, element: <RouteFallback><OverviewPage /></RouteFallback> },
     { path: "connections", element: <RouteFallback><ConnectionsPage /></RouteFallback> },
     { path: "bot-settings", element: <RouteFallback><BotSettingsPage /></RouteFallback> },
-    { path: "memory", element: <RouteFallback><MemoryPage /></RouteFallback> },
     { path: "tasks", element: <RouteFallback><TasksPage /></RouteFallback> },
     { path: "repairs", element: <RouteFallback><RepairsPage /></RouteFallback> },
     { path: "*", element: <Navigate to="/" replace /> },

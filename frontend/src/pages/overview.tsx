@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, BrainCircuit, CheckCircle2, Clock3, RefreshCw, Wrench } from "lucide-react";
+import { Activity, CheckCircle2, Clock3, RefreshCw, Wrench } from "lucide-react";
 import { api, type ServiceStatus } from "../lib/api";
 import { timeAgo } from "../lib/utils";
 import { PageHeader } from "../components/layout";
@@ -8,20 +8,18 @@ import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "../comp
 
 export function OverviewPage() {
   const status = useQuery({ queryKey: ["status"], queryFn: api.getStatus, refetchInterval: () => document.visibilityState === "visible" ? 15_000 : false, refetchIntervalInBackground: false });
-  const sessions = useQuery({ queryKey: ["memory-sessions"], queryFn: api.getMemorySessions });
   const tasks = useQuery({ queryKey: ["tasks"], queryFn: api.getTasks, refetchInterval: (query) => document.visibilityState === "visible" && query.state.data?.some((task) => task.status === "queued" || task.status === "running") ? 2_500 : false, refetchIntervalInBackground: false });
-  const refresh = () => Promise.all([status.refetch(), sessions.refetch(), tasks.refetch()]);
+  const refresh = () => Promise.all([status.refetch(), tasks.refetch()]);
   if (status.isPending) return <LoadingState />;
-  if (status.isError) return <><PageHeader eyebrow="Dashboard" title="Overview" description="Service status, recent tasks, and conversation memory." /><ErrorState error={status.error} retry={() => status.refetch()} /></>;
+  if (status.isError) return <><PageHeader eyebrow="Dashboard" title="Overview" description="Service status and recent repair tasks." /><ErrorState error={status.error} retry={() => status.refetch()} /></>;
 
   const activeTasks = tasks.data?.filter((task) => task.status === "queued" || task.status === "running").length ?? 0;
   const healthy = status.data.services.filter((service) => service.state === "connected" || service.state === "configured").length;
   return <>
-    <PageHeader eyebrow="Dashboard" title="Overview" description="Service status, recent tasks, and conversation memory." actions={<Button variant="secondary" onClick={refresh} disabled={status.isFetching}><RefreshCw className={`h-4 w-4 ${status.isFetching ? "animate-spin" : ""}`} />Refresh</Button>} />
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <PageHeader eyebrow="Dashboard" title="Overview" description="Service status and recent repair tasks." actions={<Button variant="secondary" onClick={refresh} disabled={status.isFetching}><RefreshCw className={`h-4 w-4 ${status.isFetching ? "animate-spin" : ""}`} />Refresh</Button>} />
+    <div className="grid gap-4 sm:grid-cols-3">
       <Metric icon={Activity} label="Services available" value={`${healthy}/${status.data.services.length}`} meta="Connected or configured" />
       <Metric icon={Wrench} label="Active tasks" value={String(activeTasks)} meta={activeTasks ? "Currently running" : "No active tasks"} />
-      <Metric icon={BrainCircuit} label="Memory sessions" value={sessions.isSuccess ? String(sessions.data.length) : "--"} meta="Within the retention period" />
       <Metric icon={Clock3} label="Uptime" value={formatUptime(status.data.uptimeSeconds)} meta={status.data.version ? `Version ${status.data.version}` : "Application running"} />
     </div>
     <div className="mt-5 grid gap-5 xl:grid-cols-[1.35fr_.65fr]">

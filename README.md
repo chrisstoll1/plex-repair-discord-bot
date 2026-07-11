@@ -15,12 +15,12 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 - Search for and grab releases, import and rename files, update monitoring and media settings, and refresh Plex libraries.
 - Preview manual imports and renames before applying them.
 - Restrict requests by Discord guild or channel and repairs by Discord role.
-- Retain configurable conversation context for channels, threads, and direct messages.
+- Retain complete context with each repair thread.
 - Create a dedicated public Discord thread for each issue, keep participants informed, and continue repairs after downloads or other external work finishes.
 - Persist ongoing repairs across restarts and manage working, waiting, blocked, and completed cases from Ongoing Repairs.
 - Resume waiting repairs from Sonarr or Radarr webhooks without spending model tokens on periodic checks.
 - Track queued and completed service workers from the Agent Tasks page.
-- Configure connections, model behavior, timeouts, memory, and repair policy from the web portal.
+- Configure connections, model behavior, timeouts, and repair policy from the web portal.
 
 ## Safety
 
@@ -70,7 +70,7 @@ docker compose up -d
 http://localhost:3000
 ```
 
-The `/config` volume is required for persistent settings, secrets, conversation memory, task history, and OpenAI auth. Back up the entire directory as a unit.
+The `/config` volume is required for persistent settings, secrets, repair context, task history, and OpenAI auth. Back up the entire directory as a unit.
 
 Use service URLs reachable from the container, such as `http://sonarr:8989`, `http://radarr:7878`, and `http://plex:32400`. For services on another machine, use their LAN addresses. Direct Docker or LAN URLs are preferable to tunnels and public proxies, which may time out during long release lookups.
 
@@ -83,9 +83,9 @@ For TrueNAS SCALE, use the same Compose configuration in a Custom App and replac
 3. Enter the Discord application ID if you want the global `/health` slash command.
 4. Connect OpenAI Codex using the device-code panel.
 5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, and rename events.
-6. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, memory, and repair policy.
-7. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord, AI-auth, and memory status.
-8. Use `Ongoing Repairs`, `Memory`, and `Agent Tasks` to inspect or manage retained operational data.
+6. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, and repair policy.
+7. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord and AI-auth status.
+8. Use `Ongoing Repairs` and `Agent Tasks` to inspect or manage retained operational data.
 
 The portal remains available when Discord is unconfigured or fails to connect, allowing connection settings to be corrected.
 
@@ -127,13 +127,13 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 
 | Path | Contents |
 | --- | --- |
-| `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, conversation memory, processed messages, and agent-task history |
+| `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, processed messages, and agent-task history |
 | `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
 | `/config/pi/auth.json` | Pi/OpenAI authentication data |
 
 Ordinary settings and retained message/task data are not encrypted. The database and `secrets.key` belong together; losing the key makes encrypted service credentials unrecoverable.
 
-Conversation memory defaults to per-user context within a channel or thread, 10 recent messages, a 24-hour TTL, and inclusion of bot replies. Discord threads have distinct channel IDs, including when channel allowlists are configured.
+Repair threads retain their complete conversation context with the repair case. Older context is compacted for model prompts when necessary but remains available through case-history lookup.
 
 ## Example Requests
 

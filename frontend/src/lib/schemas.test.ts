@@ -7,7 +7,6 @@ const settings = {
   radarr: { url: "", apiKey: { configured: false } },
   plex: { url: "http://plex.local:32400", token: { configured: true } },
   ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium" },
-  memory: { enabled: true, scope: "channel_user", maxMessages: 10, ttlHours: 24, includeBotReplies: true },
   timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
   repair: { requireConfirmation: true, allowDestructive: false },
 } as const;

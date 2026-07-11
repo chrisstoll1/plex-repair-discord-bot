@@ -198,6 +198,29 @@ test("a new thread message reopens a completed repair without another mention", 
   await service.shutdown();
 });
 
+test("clearing ongoing repairs aborts work and preserves completed history", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const running = store.create(caseParams("clear-running"));
+  const waiting = store.create(caseParams("clear-waiting"));
+  store.setWake(waiting.id, { type: "timer", dueAt: new Date(Date.now() + 60_000) });
+  const completed = store.create(caseParams("keep-completed"));
+  store.transition(completed.id, "resolved", { from: ["ready"] });
+  const service = new RepairCaseService(store, {
+    runner: async (repairCase, context) => {
+      if (repairCase.id === running.id) await waitForAbort(context.signal);
+      return { status: "resolved" };
+    },
+  });
+  service.start();
+  await waitUntil(() => store.get(running.id)?.status === "working");
+  assert.equal(await service.clearOngoing("test"), 2);
+  assert.equal(store.get(running.id), undefined);
+  assert.equal(store.get(waiting.id), undefined);
+  assert.equal(store.get(completed.id)?.status, "resolved");
+  await service.shutdown();
+});
+
 function caseParams(title: string): CreateRepairCase {
   return {
     id: title,

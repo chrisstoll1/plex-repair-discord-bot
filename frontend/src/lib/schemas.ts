@@ -21,13 +21,6 @@ export const settingsSchema = z.object({
     modelId: z.string(),
     thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
   }),
-  memory: z.object({
-    enabled: z.boolean(),
-    scope: z.enum(["channel_user", "channel"]),
-    maxMessages: z.number().int().min(0).max(50),
-    ttlHours: z.number().int().min(1).max(720),
-    includeBotReplies: z.boolean(),
-  }),
   timeouts: z.object({
     standardSeconds: z.number().int().min(5).max(600),
     releaseLookupSeconds: z.number().int().min(15).max(900),

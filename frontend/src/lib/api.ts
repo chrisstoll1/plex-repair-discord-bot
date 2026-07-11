@@ -14,7 +14,6 @@ export type Settings = {
   radarr: { url: string; apiKey: SecretValue };
   plex: { url: string; token: SecretValue };
   ai: { modelProvider: string; modelId: string; thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" };
-  memory: { enabled: boolean; scope: "channel_user" | "channel"; maxMessages: number; ttlHours: number; includeBotReplies: boolean };
   timeouts: { standardSeconds: number; releaseLookupSeconds: number };
   repair: { requireConfirmation: boolean; allowDestructive: boolean };
 };
@@ -29,15 +28,6 @@ type SettingsUpdate = Omit<Settings, "discord" | "sonarr" | "radarr" | "plex"> &
 export type ServiceState = "connected" | "configured" | "missing" | "error" | "unknown";
 export type ServiceStatus = { name: string; state: ServiceState; detail?: string; latencyMs?: number; checkedAt?: string };
 export type StatusResponse = { services: ServiceStatus[]; checkedAt?: string; version?: string; uptimeSeconds?: number; startedAt?: string };
-
-export type MemorySession = {
-  conversationKey: string;
-  messageCount: number;
-  firstMessageAt: string;
-  lastMessageAt: string;
-  latestRole: "user" | "assistant";
-  latestContent: string;
-};
 
 export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type AgentTask = {
@@ -139,13 +129,11 @@ export const api = {
   getSettings: () => request<{ settings: Settings }>("/api/settings").then((response) => response.settings),
   updateSettings: (settings: Settings) => request<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(toSettingsUpdate(settings)) }).then((response) => response.settings),
   getStatus: () => request<StatusResponse>("/api/status"),
-  getMemorySessions: () => request<{ sessions: MemorySession[] }>("/api/memory/sessions").then((response) => response.sessions),
-  deleteMemorySession: (conversationKey: string) => request<void>("/api/memory/sessions", { method: "DELETE", body: JSON.stringify({ conversationKey }) }),
-  clearMemoryHistory: () => request<{ deleted: number }>("/api/memory/history", { method: "DELETE" }),
   getTasks: () => request<{ tasks: AgentTask[] }>("/api/tasks").then((response) => response.tasks),
   cancelTask: (id: string) => request<{ task: AgentTask }>(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.task),
   clearTaskHistory: () => request<{ deleted: number }>("/api/tasks/history", { method: "DELETE" }),
   getRepairs: () => request<{ repairs: RepairCase[] }>("/api/repairs").then((response) => response.repairs),
+  clearOngoingRepairs: () => request<{ deleted: number }>("/api/repairs/ongoing", { method: "DELETE" }),
   cancelRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.repair),
   resumeRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/resume`, { method: "POST" }).then((response) => response.repair),
   getRepairActivity: (id: string) => request<{ activity: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/activity`).then((response) => response.activity),

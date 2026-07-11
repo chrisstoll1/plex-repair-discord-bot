@@ -3,14 +3,12 @@ import type { Message } from "discord.js";
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
-import type { ConversationMessage, ConversationStore } from "../storage/conversation.js";
-import type { PiAgentService } from "../agent/pi-agent.js";
+import type { ConversationStore } from "../storage/conversation.js";
 import type { RepairCaseService } from "../agent/repair-case-service.js";
 import type { RepairCase, RepairCaseOutboxItem, RepairCaseStatus, RepairCaseStore } from "../storage/repair-cases.js";
 
 export class DiscordBotService {
   private client: Client | undefined;
-  private readonly conversationQueue = new KeyedSerialQueue();
   private readonly processingMessageIds = new Set<string>();
   private readonly repairIndicators = new Map<string, RepairIndicators>();
   private repairCaseService?: RepairCaseService;
@@ -18,7 +16,6 @@ export class DiscordBotService {
   constructor(
     private readonly store: SettingsStore,
     private readonly conversations: ConversationStore,
-    private readonly agent: PiAgentService,
     private readonly logger: Logger,
     private readonly repairCases?: RepairCaseStore,
   ) {}
@@ -84,107 +81,13 @@ export class DiscordBotService {
       }
 
 
-      if (this.repairCases && this.repairCaseService) {
-        await this.handleRepairCaseMessage(message, content, existingCase);
+      if (!this.repairCases || !this.repairCaseService) {
+        this.logger.error("Repair case service is not initialized");
+        await message.reply({ content: "I couldn't start that repair. Please try again shortly.", allowedMentions: { parse: [], repliedUser: false } });
         return;
       }
-
-      if (this.processingMessageIds.has(message.id)) {
-        this.logger.debug({ messageId: message.id }, "Ignoring duplicate in-flight Discord message");
-        return;
-      }
-
-      const conversationKey = getConversationKey({
-        guildId: message.guildId,
-        channelId: message.channelId,
-        userId: message.author.id,
-        scope: latest.memory.scope,
-      });
-      const botUserId = client.user.id;
-      this.processingMessageIds.add(message.id);
-
-      await reactions.set(selectInitialReaction(content));
-      const typing = startTypingRefresh(message, this.logger);
-      const progress = startReactionProgress(reactions, content);
-
-      try {
-        await this.conversationQueue.run(conversationKey, async () => {
-          try {
-            if (this.conversations.hasMessageId(message.id)) {
-              this.logger.debug({ messageId: message.id }, "Ignoring previously processed Discord message");
-              return;
-            }
-          } catch (error) {
-            this.logger.warn({ err: error, messageId: message.id }, "Failed to check conversation memory for a duplicate message");
-          }
-
-          const roles = message.member?.roles.cache.map((role) => role.id) ?? [];
-          let recentMessages: ConversationMessage[] = [];
-          if (latest.memory.enabled && latest.memory.maxMessages > 0) {
-            try {
-              recentMessages = this.conversations.getRecent(
-                conversationKey,
-                latest.memory.maxMessages,
-                latest.memory.ttlHours,
-                latest.memory.includeBotReplies,
-              );
-            } catch (error) {
-              this.logger.warn({ err: error, conversationKey }, "Failed to read conversation memory; continuing without it");
-            }
-          }
-
-          const response = await this.agent.runDiscordRequest(content, {
-            guildId: message.guildId ?? undefined,
-            channelId: message.channelId,
-            userId: message.author.id,
-            roles,
-            conversationKey,
-            sourceMessageId: message.id,
-            recentMessages,
-            onProgress: async (update) => {
-              if (update.type !== "tasks_started") return;
-              await message.reply({
-                content: formatAgentProgress(update.titles, update.message),
-                allowedMentions: { parse: [], repliedUser: false },
-              });
-            },
-          });
-          const deliveredResponse = truncateDiscord(response);
-
-          progress.stop();
-          await message.reply({ content: deliveredResponse, allowedMentions: { parse: [], repliedUser: false } });
-
-          try {
-            const persistenceSettings = readRuntimeSettings(this.store).memory;
-            if (persistenceSettings.enabled && persistenceSettings.maxMessages > 0) {
-              this.conversations.addExchange({
-                conversationKey,
-                userId: message.author.id,
-                userMessageId: message.id,
-                userContent: content,
-                userCreatedAt: message.createdAt,
-                assistantUserId: botUserId,
-                assistantContent: persistenceSettings.includeBotReplies ? deliveredResponse : undefined,
-              });
-            } else {
-              this.conversations.recordProcessedMessage(message.id);
-            }
-          } catch (error) {
-            this.logger.warn({ err: error, messageId: message.id, conversationKey }, "Failed to persist delivered conversation response");
-          }
-
-          await reactions.set("✅");
-        });
-      } catch (error) {
-        progress.stop();
-        this.logger.error({ err: error }, "Failed to process Discord message");
-        await message.reply({ content: "I couldn't complete that request. Please try again shortly.", allowedMentions: { parse: [], repliedUser: false } });
-        await reactions.set("❌");
-      } finally {
-        this.processingMessageIds.delete(message.id);
-        typing.stop();
-        progress.stop();
-      }
+      await this.handleRepairCaseMessage(message, content, existingCase);
+      return;
     });
 
     try {
@@ -249,6 +152,14 @@ export class DiscordBotService {
     }
     if (!sourceMessage) return;
     await this.startRepairIndicators(repairCase.id, sourceMessage, channel);
+  }
+
+  async stopRepairCaseActivity(caseId: string, emoji = "⛔"): Promise<void> {
+    const indicators = this.repairIndicators.get(caseId);
+    if (!indicators) return;
+    indicators.stop();
+    this.repairIndicators.delete(caseId);
+    await indicators.reactions.set(emoji);
   }
 
   private findRepairCase(guildId: string, threadId: string): RepairCase | undefined {
@@ -385,11 +296,6 @@ export class KeyedSerialQueue {
   }
 }
 
-function getConversationKey(params: { guildId: string | null; channelId: string; userId: string; scope: "channel_user" | "channel" }): string {
-  const base = params.guildId ? `guild:${params.guildId}:channel:${params.channelId}` : `dm:${params.userId}`;
-  return params.scope === "channel_user" && params.guildId ? `${base}:user:${params.userId}` : base;
-}
-
 function isAllowed(value: string | null, allowed: Set<string>): boolean {
   return allowed.size === 0 || (value !== null && allowed.has(value));
 }
@@ -456,10 +362,6 @@ class MessageReactionTracker {
     await this.message.react(emoji);
     this.currentEmoji = emoji;
   }
-}
-
-function startTypingRefresh(message: Message, logger: Logger): { stop: () => void } {
-  return startTypingRefreshForChannel(message.channel, logger, message.id);
 }
 
 function startTypingRefreshForChannel(channel: Message["channel"], logger: Logger, contextId: string): { stop: () => void } {

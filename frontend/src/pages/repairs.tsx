@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Ban, CheckCircle2, CircleDashed, Clock3, ExternalLink, FastForward, RefreshCw, RotateCcw, Wrench } from "lucide-react";
+import { AlertTriangle, Ban, CheckCircle2, CircleDashed, Clock3, ExternalLink, FastForward, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { PageHeader } from "../components/layout";
 import { EmptyState, ErrorState, LoadingState } from "../components/states";
@@ -39,6 +39,7 @@ export function RepairsPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [selectedId, setSelectedId] = useState<string>();
   const [cancelId, setCancelId] = useState<string>();
+  const [clearOpen, setClearOpen] = useState(false);
   const repairs = useQuery({
     queryKey: ["repairs"],
     queryFn: api.getRepairs,
@@ -61,15 +62,25 @@ export function RepairsPage() {
     onSuccess: (updated) => { updateRepair(updated); toast({ tone: "success", title: "Repair resumed", description: "The repair will run again now." }); },
     onError: (error) => toast({ tone: "error", title: "Unable to resume repair", description: error.message }),
   });
+  const clearOngoing = useMutation({
+    mutationFn: api.clearOngoingRepairs,
+    onSuccess: ({ deleted }) => {
+      queryClient.setQueryData<RepairCase[]>(["repairs"], (items) => items?.filter((repair) => terminalStatuses.has(repair.status)) ?? []);
+      setSelectedId(undefined);
+      toast({ tone: "success", title: "Ongoing repairs cleared", description: `${deleted} repair${deleted === 1 ? "" : "s"} stopped and removed.` });
+    },
+    onError: (error) => toast({ tone: "error", title: "Unable to clear repairs", description: error.message }),
+  });
 
   if (repairs.isPending) return <LoadingState label="Loading repairs" />;
   if (repairs.isError) return <><PageHeader eyebrow="Repair queue" title="Ongoing Repairs" description="Follow repair progress and intervene when a case needs help." /><ErrorState error={repairs.error} retry={() => repairs.refetch()} /></>;
 
   const selected = repairs.data.find((repair) => repair.id === selectedId);
   const activeCount = repairs.data.filter((repair) => activeStatuses.has(repair.status)).length;
+  const ongoingCount = repairs.data.filter((repair) => !terminalStatuses.has(repair.status)).length;
   const visibleGroups = filter === "all" ? groups : groups.filter((group) => group.id === filter);
   return <>
-    <PageHeader eyebrow="Repair queue" title="Ongoing Repairs" description="Follow repair progress, see what happens next, and intervene when a case needs help." actions={<Button variant="secondary" onClick={() => repairs.refetch()} disabled={repairs.isFetching}><RefreshCw className={`h-4 w-4 ${repairs.isFetching ? "animate-spin" : ""}`} />Refresh</Button>} />
+    <PageHeader eyebrow="Repair queue" title="Ongoing Repairs" description="Follow repair progress, see what happens next, and intervene when a case needs help." actions={<div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => repairs.refetch()} disabled={repairs.isFetching}><RefreshCw className={`h-4 w-4 ${repairs.isFetching ? "animate-spin" : ""}`} />Refresh</Button><Button variant="danger" onClick={() => setClearOpen(true)} disabled={ongoingCount === 0 || clearOngoing.isPending}><Trash2 className="h-4 w-4" />Clear ongoing</Button></div>} />
     <div className="mb-5 flex flex-col gap-3 rounded-lg border border-line bg-white/[.02] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-3"><span className={`h-2 w-2 rounded-full ${activeCount ? "animate-pulse bg-cyan" : "bg-signal"}`} /><p className="text-sm text-zinc-400">{activeCount ? `${activeCount} active repair${activeCount === 1 ? "" : "s"}` : "No repairs are currently active"}</p></div>
       <span className="text-xs text-zinc-600">{activeCount ? "Updates automatically while work is active" : `${repairs.data.length} total`}</span>
@@ -86,6 +97,7 @@ export function RepairsPage() {
       {selected && <ActivityPanel repair={selected} activity={activity.data} pending={activity.isPending} error={activity.error} retry={() => activity.refetch()} close={() => setSelectedId(undefined)} />}
     </div>}
     <ConfirmDialog open={!!cancelId} onOpenChange={(open) => !open && setCancelId(undefined)} title="Cancel this repair?" description="Automated repair work will stop. Its history and technical activity will remain available." confirmLabel="Cancel repair" destructive onConfirm={() => { if (cancelId) cancel.mutate(cancelId); setCancelId(undefined); }} />
+    <ConfirmDialog open={clearOpen} onOpenChange={setClearOpen} title="Clear all ongoing repairs?" description={`This will stop and permanently remove ${ongoingCount} ongoing repair${ongoingCount === 1 ? "" : "s"}, including saved thread context and activity. Completed repair history will remain.`} confirmLabel="Clear ongoing repairs" destructive onConfirm={() => { clearOngoing.mutate(); setClearOpen(false); }} />
   </>;
 }
 

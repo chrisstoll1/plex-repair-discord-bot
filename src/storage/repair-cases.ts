@@ -159,6 +159,11 @@ export class RepairCaseStore {
       ORDER BY created_at, rowid LIMIT ?`).all(Math.max(1, Math.min(limit, 1000))) as CaseRow[]).map(caseFromRow);
   }
 
+  delete(ids: string[]): number {
+    if (ids.length === 0) return 0;
+    return this.db.prepare(`DELETE FROM repair_cases WHERE id IN (${ids.map(() => "?").join(", ")})`).run(...ids).changes;
+  }
+
   addMessage(caseId: string, message: { role: RepairCaseMessageRole; content: string; sourceMessageId?: string; metadata?: unknown; createdAt?: Date | string }): RepairCaseMessage {
     const createdAt = message.createdAt ? timestamp(message.createdAt) : this.timestamp();
     const result = this.db.prepare(`INSERT INTO repair_case_messages

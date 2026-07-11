@@ -47,7 +47,6 @@ function runtimeSettings(): RuntimeSettings {
     radarr: { url: "", apiKey: "" },
     plex: { url: "", token: "" },
     ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium" },
-    memory: { enabled: true, scope: "channel_user", maxMessages: 10, ttlHours: 24, includeBotReplies: true },
     timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
     repair: { requireConfirmation: false, allowDestructive: true },
   };

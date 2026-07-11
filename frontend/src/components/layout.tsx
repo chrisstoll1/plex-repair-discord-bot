@@ -1,4 +1,4 @@
-import { Activity, Bot, BrainCircuit, Cable, Menu, Stethoscope, Wrench } from "lucide-react";
+import { Activity, Bot, Cable, Menu, Stethoscope, Wrench } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils";
@@ -8,7 +8,6 @@ const navigation = [
   { to: "/", label: "Overview", icon: Activity },
   { to: "/connections", label: "Connections", icon: Cable },
   { to: "/bot-settings", label: "Bot Settings", icon: Bot },
-  { to: "/memory", label: "Memory", icon: BrainCircuit },
   { to: "/tasks", label: "Agent Tasks", icon: Wrench },
   { to: "/repairs", label: "Ongoing Repairs", icon: Stethoscope },
 ];

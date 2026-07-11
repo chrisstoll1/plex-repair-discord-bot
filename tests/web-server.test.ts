@@ -6,7 +6,6 @@ import test from "node:test";
 import pino from "pino";
 import type { PiAuthSnapshot } from "../src/agent/pi-auth.js";
 import type { AppConfig } from "../src/config.js";
-import { ConversationStore } from "../src/storage/conversation.js";
 import { openDatabase } from "../src/storage/db.js";
 import { SecretBox } from "../src/storage/secrets.js";
 import { SettingsStore } from "../src/storage/settings.js";
@@ -30,13 +29,12 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   };
   const db = openDatabase(config);
   const settings = new SettingsStore(db, SecretBox.open(config.secretsKeyPath));
-  const conversations = new ConversationStore(db);
   const repairs = new RepairCaseStore(db);
   settings.setString("discord.token", "never-return-this", { secret: true });
   settings.setString("discord.applicationId", "before");
 
   let restartCount = 0;
-  const discord = { restart: async () => { restartCount += 1; } };
+  const discord = { restart: async () => { restartCount += 1; }, stopRepairCaseActivity: async () => undefined };
   const queue = {
     list: () => [],
     get: () => undefined,
@@ -57,12 +55,15 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
     cancel: (id: string) => repairs.cancel(id, "test"),
     resume: (id: string) => repairs.resume(id, "test"),
+    clearOngoing: async () => {
+      const ongoing = repairs.list({ statuses: ["working", "waiting", "ready", "verifying", "needs_input", "blocked"] });
+      return repairs.delete(ongoing.map((item) => item.id));
+    },
     refreshScheduling: () => undefined,
   };
 
   const app = await createWebServer(
     settings,
-    conversations,
     queue as never,
     discord as never,
     piAuth as never,
@@ -101,7 +102,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(settings.getString("discord.token"), undefined);
   assert.equal(restartCount, 1);
 
-  assert.deepEqual((await app.inject({ method: "GET", url: "/api/memory/sessions" })).json(), { sessions: [] });
+  assert.equal((await app.inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
   const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
   repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
@@ -115,6 +116,10 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(repairs.get(repair.id)?.status, "ready");
   const repairList = await app.inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
+  const clearedRepairs = await app.inject({ method: "DELETE", url: "/api/repairs/ongoing" });
+  assert.equal(clearedRepairs.statusCode, 200);
+  assert.equal(clearedRepairs.json().deleted, 1);
+  assert.deepEqual((await app.inject({ method: "GET", url: "/api/repairs" })).json(), { repairs: [] });
   assert.equal((await app.inject({ method: "GET", url: "/api/not-real" })).statusCode, 404);
   assert.match((await app.inject({ method: "GET", url: "/connections" })).body, /Repairman/);
 });
@@ -134,7 +139,6 @@ function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { actio
     radarr: { url: "", apiKey: { action: "keep" } },
     plex: { url: "", token: { action: "keep" } },
     ai: { modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium" },
-    memory: { enabled: true, scope: "channel_user", maxMessages: 10, ttlHours: 24, includeBotReplies: true },
     timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
     repair: { requireConfirmation: true, allowDestructive: false },
   };
