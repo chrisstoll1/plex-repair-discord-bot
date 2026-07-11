@@ -155,18 +155,19 @@ export class RepairCaseService {
     await this.waitForIdle();
   }
 
-  async clearOngoing(actor = "admin"): Promise<number> {
+  async clearAll(actor = "admin"): Promise<number> {
     this.assertAccepting();
-    const ongoing = this.store.list({ statuses: ["working", "waiting", "ready", "verifying", "needs_input", "blocked"], limit: 1000 });
-    for (const repairCase of ongoing) {
+    const repairCases = this.store.listAll();
+    for (const repairCase of repairCases) {
+      if (["resolved", "exhausted", "cancelled"].includes(repairCase.status)) continue;
       this.removeQueued(repairCase.id);
       this.pendingMessages.delete(repairCase.id);
       this.controllers.get(repairCase.id)?.abort(new Error(`Repair case ${repairCase.id} was cleared`));
       this.store.cancel(repairCase.id, actor);
     }
-    if (ongoing.some((repairCase) => this.controllers.has(repairCase.id))) await this.waitForIdle();
+    if (repairCases.some((repairCase) => this.controllers.has(repairCase.id))) await this.waitForIdle();
     this.scheduleWake();
-    return this.store.delete(ongoing.map((repairCase) => repairCase.id));
+    return this.store.deleteAll();
   }
 
   private enqueue(id: string): void {

@@ -133,7 +133,7 @@ export const api = {
   cancelTask: (id: string) => request<{ task: AgentTask }>(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.task),
   clearTaskHistory: () => request<{ deleted: number }>("/api/tasks/history", { method: "DELETE" }),
   getRepairs: () => request<{ repairs: RepairCase[] }>("/api/repairs").then((response) => response.repairs),
-  clearOngoingRepairs: () => request<{ deleted: number }>("/api/repairs/ongoing", { method: "DELETE" }),
+  clearRepairs: () => request<{ deleted: number }>("/api/repairs", { method: "DELETE" }),
   cancelRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.repair),
   resumeRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/resume`, { method: "POST" }).then((response) => response.repair),
   getRepairActivity: (id: string) => request<{ activity: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/activity`).then((response) => response.activity),

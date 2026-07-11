@@ -159,9 +159,17 @@ export class RepairCaseStore {
       ORDER BY created_at, rowid LIMIT ?`).all(Math.max(1, Math.min(limit, 1000))) as CaseRow[]).map(caseFromRow);
   }
 
+  listAll(): RepairCase[] {
+    return (this.db.prepare("SELECT * FROM repair_cases ORDER BY updated_at DESC, id").all() as CaseRow[]).map(caseFromRow);
+  }
+
   delete(ids: string[]): number {
     if (ids.length === 0) return 0;
     return this.db.prepare(`DELETE FROM repair_cases WHERE id IN (${ids.map(() => "?").join(", ")})`).run(...ids).changes;
+  }
+
+  deleteAll(): number {
+    return this.db.prepare("DELETE FROM repair_cases").run().changes;
   }
 
   addMessage(caseId: string, message: { role: RepairCaseMessageRole; content: string; sourceMessageId?: string; metadata?: unknown; createdAt?: Date | string }): RepairCaseMessage {

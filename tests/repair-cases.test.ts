@@ -198,7 +198,7 @@ test("a new thread message reopens a completed repair without another mention", 
   await service.shutdown();
 });
 
-test("clearing ongoing repairs aborts work and preserves completed history", async (t) => {
+test("clearing all repairs aborts work and removes completed history", async (t) => {
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db);
   const running = store.create(caseParams("clear-running"));
@@ -214,10 +214,10 @@ test("clearing ongoing repairs aborts work and preserves completed history", asy
   });
   service.start();
   await waitUntil(() => store.get(running.id)?.status === "working");
-  assert.equal(await service.clearOngoing("test"), 2);
+  assert.equal(await service.clearAll("test"), 3);
   assert.equal(store.get(running.id), undefined);
   assert.equal(store.get(waiting.id), undefined);
-  assert.equal(store.get(completed.id)?.status, "resolved");
+  assert.equal(store.get(completed.id), undefined);
   await service.shutdown();
 });
 

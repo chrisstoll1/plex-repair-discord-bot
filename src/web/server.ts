@@ -176,9 +176,9 @@ export async function createWebServer(
 
   app.get("/api/repairs", async () => ({ repairs: repairCases?.list({ limit: 500 }).map((repairCase) => publicRepairCase(repairCase, repairCases)) ?? [] }));
 
-  app.delete("/api/repairs/ongoing", async () => {
-    const ids = repairCases?.list({ statuses: ["working", "waiting", "ready", "verifying", "needs_input", "blocked"], limit: 1000 }).map((repairCase) => repairCase.id) ?? [];
-    const deleted = await repairCaseService?.clearOngoing("admin") ?? 0;
+  app.delete("/api/repairs", async () => {
+    const ids = repairCases?.listAll().map((repairCase) => repairCase.id) ?? [];
+    const deleted = await repairCaseService?.clearAll("admin") ?? 0;
     await Promise.all(ids.map((id) => discord.stopRepairCaseActivity(id)));
     return { deleted };
   });

@@ -55,10 +55,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
     cancel: (id: string) => repairs.cancel(id, "test"),
     resume: (id: string) => repairs.resume(id, "test"),
-    clearOngoing: async () => {
-      const ongoing = repairs.list({ statuses: ["working", "waiting", "ready", "verifying", "needs_input", "blocked"] });
-      return repairs.delete(ongoing.map((item) => item.id));
-    },
+    clearAll: async () => repairs.deleteAll(),
     refreshScheduling: () => undefined,
   };
 
@@ -116,7 +113,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(repairs.get(repair.id)?.status, "ready");
   const repairList = await app.inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
-  const clearedRepairs = await app.inject({ method: "DELETE", url: "/api/repairs/ongoing" });
+  const clearedRepairs = await app.inject({ method: "DELETE", url: "/api/repairs" });
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/repairs" })).json(), { repairs: [] });
