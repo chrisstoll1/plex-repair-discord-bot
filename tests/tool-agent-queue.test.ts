@@ -139,6 +139,52 @@ test("shutdown cancels queued work, aborts running work, and rejects new tasks",
   assert.throws(() => queue.enqueue(request("late")), /shutting down/);
 });
 
+test("equivalent active tasks are reused and the approved action reaches the runner", async (t) => {
+  const { store, close } = createStore();
+  t.after(close);
+  let runs = 0;
+  let approvedAction: string | undefined;
+  const queue = new ToolAgentQueueService(store, async (_task, _roles, _signal, action) => {
+    runs += 1;
+    approvedAction = action;
+    await delay(10);
+    return "same result";
+  });
+  const first = queue.enqueue({ ...request("inspect"), approvedAction: "Refresh Sonarr series ID 42" });
+  const duplicate = queue.enqueue({ ...request("inspect"), approvedAction: "Refresh Sonarr series ID 42" });
+  assert.equal(duplicate.id, first.id);
+  await queue.waitForTask(first.id);
+  const fresh = queue.enqueue(request("inspect"));
+  assert.notEqual(fresh.id, first.id);
+  await queue.waitForTask(fresh.id);
+  assert.equal(runs, 2);
+  assert.equal(approvedAction, undefined);
+});
+
+test("restart recovery cancels orphaned queued tasks", (t) => {
+  const { store, close } = createStore();
+  t.after(close);
+  const orphan = store.create(taskParams("orphan", "conversation", "user"));
+  const queue = new ToolAgentQueueService(store, async () => "unused");
+  queue.recover();
+  assert.equal(queue.get(orphan.id)?.status, "cancelled");
+});
+
+test("cancelling a conversation aborts all child tasks", async (t) => {
+  const { store, close } = createStore();
+  t.after(close);
+  const queue = new ToolAgentQueueService(store, async (_task, _roles, signal) => {
+    await aborted(signal);
+    throw signal.reason;
+  }, undefined, { maxConcurrent: 2 });
+  const first = queue.enqueue(request("one"));
+  const second = queue.enqueue(request("two"));
+  await waitUntil(() => queue.get(first.id)?.status === "running" && queue.get(second.id)?.status === "running");
+  await queue.cancelConversation("conversation");
+  assert.equal(queue.get(first.id)?.status, "cancelled");
+  assert.equal(queue.get(second.id)?.status, "cancelled");
+});
+
 function createStore() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "plex-repairman-tasks-"));
   const config = { databasePath: path.join(root, "app.db") } as AppConfig;

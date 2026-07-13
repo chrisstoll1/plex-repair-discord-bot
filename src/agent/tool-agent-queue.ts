@@ -15,9 +15,10 @@ export type ToolAgentTaskRequest = {
   userId: string;
   sourceMessageId?: string;
   roles: string[];
+  approvedAction?: string;
 };
 
-export type ToolAgentRunner = (task: ToolAgentTask, roles: string[], signal: AbortSignal) => Promise<string>;
+export type ToolAgentRunner = (task: ToolAgentTask, roles: string[], signal: AbortSignal, approvedAction?: string) => Promise<string>;
 
 const MAX_QUEUED_GLOBAL = 100;
 const MAX_ACTIVE_PER_USER = 12;
@@ -29,6 +30,7 @@ export class ToolAgentQueueService {
   private readonly queuedIds: string[] = [];
   private readonly waiters = new Map<string, Array<(task: ToolAgentTask) => void>>();
   private readonly rolesByTask = new Map<string, string[]>();
+  private readonly approvedActionByTask = new Map<string, string>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly idleWaiters: Array<() => void> = [];
   private running = 0;
@@ -44,11 +46,8 @@ export class ToolAgentQueueService {
   recover(): void {
     const failed = this.store.failInterruptedRunningTasks();
     if (failed > 0) this.logger?.warn({ failed }, "Marked interrupted tool-agent tasks as failed");
-
-    for (const task of this.store.list({ limit: MAX_QUEUED_GLOBAL }).reverse()) {
-      if (task.status === "queued") this.queuedIds.push(task.id);
-    }
-    this.drain();
+    const cancelled = this.store.cancelQueuedTasks();
+    if (cancelled > 0) this.logger?.warn({ cancelled }, "Cancelled orphaned queued tool-agent tasks after restart");
   }
 
   enqueue(params: ToolAgentTaskRequest): ToolAgentTask {
@@ -59,13 +58,34 @@ export class ToolAgentQueueService {
     if (this.stopping) throw new Error("Tool-agent queue is shutting down");
     if (params.length === 0) return [];
     if (params.some((task) => !isToolProfile(task.toolProfile))) throw new Error("A task has an unknown tool profile");
-    const tasks = this.store.createMany(params.map((task) => ({ ...task, id: crypto.randomUUID() })), MAX_QUEUED_GLOBAL, MAX_ACTIVE_PER_USER);
-    for (const [index, task] of tasks.entries()) {
-      this.rolesByTask.set(task.id, params[index]?.roles ?? []);
+    const tasks: Array<ToolAgentTask | undefined> = new Array(params.length);
+    const pending: Array<{ index: number; request: ToolAgentTaskRequest }> = [];
+    const pendingAliases = new Map<number, number>();
+    const pendingByFingerprint = new Map<string, number>();
+    for (const [index, request] of params.entries()) {
+      const reusable = this.findReusable(request);
+      if (reusable) tasks[index] = reusable;
+      else {
+        const fingerprint = taskFingerprint(request);
+        const existingIndex = pendingByFingerprint.get(fingerprint);
+        if (existingIndex !== undefined) pendingAliases.set(index, existingIndex);
+        else {
+          pendingByFingerprint.set(fingerprint, index);
+          pending.push({ index, request });
+        }
+      }
+    }
+    const created = this.store.createMany(pending.map(({ request }) => ({ ...request, id: crypto.randomUUID() })), MAX_QUEUED_GLOBAL, MAX_ACTIVE_PER_USER);
+    for (const [createdIndex, task] of created.entries()) {
+      const pendingTask = pending[createdIndex]!;
+      tasks[pendingTask.index] = task;
+      this.rolesByTask.set(task.id, pendingTask.request.roles);
+      if (pendingTask.request.approvedAction) this.approvedActionByTask.set(task.id, pendingTask.request.approvedAction);
       this.queuedIds.push(task.id);
     }
+    for (const [alias, source] of pendingAliases) tasks[alias] = tasks[source];
     this.drain();
-    return tasks;
+    return tasks as ToolAgentTask[];
   }
 
   get(id: string, scope?: ToolAgentTaskScope): ToolAgentTask | undefined {
@@ -164,7 +184,7 @@ export class ToolAgentQueueService {
     }, this.options.maxRuntimeMs ?? MAX_RUNTIME_MS);
 
     try {
-      const resultText = await this.runner(task, this.rolesByTask.get(id) ?? [], controller.signal);
+      const resultText = await this.runner(task, this.rolesByTask.get(id) ?? [], controller.signal, this.approvedActionByTask.get(id));
       const settled = timedOut
         ? this.store.markFailed(id, `Tool-agent task ${id} exceeded max runtime`)
         : controller.signal.aborted
@@ -182,6 +202,7 @@ export class ToolAgentQueueService {
       clearTimeout(timer);
       this.controllers.delete(id);
       this.rolesByTask.delete(id);
+      this.approvedActionByTask.delete(id);
     }
   }
 
@@ -191,8 +212,26 @@ export class ToolAgentQueueService {
     this.waiters.delete(task.id);
     for (const waiter of waiters) waiter(task);
   }
+
+  async cancelConversation(conversationKey: string): Promise<void> {
+    const active = this.store.list({ conversationKey, limit: 200 }).filter((task) => !isTerminal(task));
+    await Promise.all(active.map((task) => this.cancel(task.id, { conversationKey, userId: task.userId })));
+  }
+
+  private findReusable(request: ToolAgentTaskRequest): ToolAgentTask | undefined {
+    return this.store.list({ conversationKey: request.conversationKey, userId: request.userId, limit: 200 }).find((task) => {
+      if (task.toolProfile !== request.toolProfile || normalize(task.prompt) !== normalize(request.prompt)) return false;
+      if (stableJson(task.input) !== stableJson(request.input)) return false;
+      if (this.approvedActionByTask.get(task.id) !== request.approvedAction) return false;
+      return ["queued", "running"].includes(task.status);
+    });
+  }
 }
 
 function isTerminal(task: ToolAgentTask): boolean {
   return ["succeeded", "failed", "cancelled"].includes(task.status);
 }
+
+function normalize(value: string): string { return value.replace(/\s+/g, " ").trim().toLowerCase(); }
+function stableJson(value: unknown): string { return value === undefined ? "" : JSON.stringify(value); }
+function taskFingerprint(task: ToolAgentTaskRequest): string { return `${task.toolProfile}\n${normalize(task.prompt)}\n${stableJson(task.input)}\n${task.approvedAction ?? ""}`; }

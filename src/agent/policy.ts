@@ -2,6 +2,7 @@ import { csvToSet, type RuntimeSettings } from "../domain/settings.js";
 
 export type RepairContext = {
   roles: string[];
+  consumeConfirmation?: (action: string) => boolean;
 };
 
 export type RepairAuthorizationOptions = {
@@ -20,15 +21,14 @@ export function authorizeRepair(settings: RuntimeSettings, context: RepairContex
     return toolResponse({ blocked: true, reason: "Destructive repair actions are disabled by policy", action: options.action });
   }
 
-  if (settings.repair.requireConfirmation) {
-    return toolResponse({ confirmationRequired: true, action: options.action, reason: "Confirmed repair execution is not enabled yet" });
+  if (settings.repair.requireConfirmation && !context.consumeConfirmation?.(options.action)) {
+    return toolResponse({ confirmationRequired: true, action: options.action, reason: "This exact repair task needs user approval" });
   }
 
   return undefined;
 }
 
 export function canStartRepairWorker(settings: RuntimeSettings, context: RepairContext): boolean {
-  if (settings.repair.requireConfirmation) return false;
   const repairRoles = csvToSet(settings.discord.repairRoleIds);
   return repairRoles.size === 0 || context.roles.some((role) => repairRoles.has(role));
 }

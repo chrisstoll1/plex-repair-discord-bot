@@ -27,13 +27,17 @@ const toolAgentTasks = new ToolAgentTaskStore(db);
 const repairCases = new RepairCaseStore(db);
 const piAuth = new PiAuthService(config);
 const agent = new PiAgentService(config, settings, logger);
-const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal) => agent.runToolAgentTask(task, roles, signal), logger);
+const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal, approvedAction) => agent.runToolAgentTask(task, roles, signal, approvedAction), logger);
 agent.setToolAgentQueue(toolAgentQueue);
 toolAgentQueue.recover();
 const discord = new DiscordBotService(settings, conversations, logger, repairCases, (request) => agent.generateRepairCaseTitle(request));
 const repairCaseService = new RepairCaseService(repairCases, {
   logger,
-  onRunStart: (repairCase) => discord.startRepairCaseActivity(repairCase),
+  onCancelWork: (caseId) => toolAgentQueue.cancelConversation(`repair:${caseId}`),
+  onRunStart: async (repairCase) => {
+    await discord.startRepairCaseActivity(repairCase);
+    await discord.setRepairCaseStage(repairCase.id, repairCase.attempts > 1 ? "repairing" : "diagnosing");
+  },
   runner: async (repairCase, runContext) => {
     const latestMessage = [...runContext.messages].reverse().find((message) => message.role === "user");
     const metadata = latestMessage?.metadata && typeof latestMessage.metadata === "object" ? latestMessage.metadata as { userId?: string; roles?: string[] } : {};
@@ -48,7 +52,11 @@ const repairCaseService = new RepairCaseService(repairCases, {
     }
     const webhookBaseUrl = settings.getString("webhooks.publicBaseUrl");
     const webhookProviders = webhookBaseUrl
-      ? (["sonarr", "radarr"] as const).filter((provider) => settings.getString(`webhooks.${provider}.enabled`) === "true")
+      ? (["sonarr", "radarr"] as const).filter((provider) => {
+          if (settings.getString(`webhooks.${provider}.enabled`) !== "true") return false;
+          const lastReceivedAt = settings.getString(`webhooks.${provider}.lastReceivedAt`);
+          return Boolean(lastReceivedAt && Date.parse(lastReceivedAt) >= Date.now() - 7 * 86_400_000);
+        })
       : [];
     const result = await agent.runRepairCase({
       objective: repairCase.objective,
@@ -66,8 +74,10 @@ const repairCaseService = new RepairCaseService(repairCases, {
         roles,
         conversationKey: `repair:${repairCase.id}`,
         sourceMessageId: repairCase.source,
+        requestConfirmation: (summary) => discord.requestRepairConfirmation(repairCase, authorizationActor, summary, runContext.signal),
         onProgress: async (update) => {
           if (update.type !== "tasks_started") return;
+          await discord.setRepairCaseStage(repairCase.id, "repairing");
           if (runContext.resume?.source === "webhook") {
             const provider = runContext.resume.provider === "radarr" ? "Radarr" : "Sonarr";
             await runContext.progress(`${provider} reported new activity for this repair. I’m verifying the result now.`);

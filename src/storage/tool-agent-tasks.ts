@@ -212,6 +212,12 @@ export class ToolAgentTaskStore {
     return result.changes;
   }
 
+  cancelQueuedTasks(error = "Process restarted before this task started"): number {
+    const now = new Date().toISOString();
+    return this.db.prepare("UPDATE tool_agent_tasks SET status = 'cancelled', error = ?, finished_at = ?, updated_at = ? WHERE status = 'queued'")
+      .run(truncate(error, MAX_STORED_ERROR), now, now).changes;
+  }
+
   clearHistory(): number {
     return this.db
       .prepare(

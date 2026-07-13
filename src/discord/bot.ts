@@ -1,5 +1,6 @@
-import { Client, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ThreadAutoArchiveDuration } from "discord.js";
-import type { Message } from "discord.js";
+import crypto from "node:crypto";
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, ComponentType, Events, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, ThreadAutoArchiveDuration } from "discord.js";
+import type { ButtonInteraction, Message } from "discord.js";
 import type { Logger } from "pino";
 import { csvToSet, readRuntimeSettings } from "../domain/settings.js";
 import type { SettingsStore } from "../storage/settings.js";
@@ -128,6 +129,57 @@ export class DiscordBotService {
     return member.roles.cache.map((role) => role.id);
   }
 
+  async requestRepairConfirmation(repairCase: RepairCase, userId: string, summary: string, signal?: AbortSignal): Promise<boolean> {
+    if (!this.client || signal?.aborted) return false;
+    const channel = await this.client.channels.fetch(repairCase.threadId);
+    if (signal?.aborted || !channel?.isTextBased() || !("send" in channel)) return false;
+    const token = crypto.randomUUID();
+    const sent = await channel.send({
+      content: `${summary}\n\nWould you like me to do this? This approval expires in 5 minutes.`,
+      components: [confirmationControls(token, false)],
+      allowedMentions: { parse: [] },
+    });
+    if (signal?.aborted) {
+      const resultContent = `${summary}\n\nThis repair changed or stopped, so the approval was cancelled.`;
+      await sent.edit({ content: resultContent, components: [confirmationControls(token, true)] }).catch(() => undefined);
+      this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: resultContent, sourceMessageId: sent.id });
+      return false;
+    }
+    const collector = sent.createMessageComponentCollector({
+        componentType: ComponentType.Button,
+        time: 5 * 60_000,
+        filter: (candidate) => candidate.user.id === userId && candidate.customId.endsWith(token),
+        max: 1,
+      });
+    const abort = () => collector.stop("aborted");
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      const interaction = await new Promise<ButtonInteraction | undefined>((resolve) => {
+        collector.once("collect", resolve);
+        collector.once("end", (collected) => { if (collected.size === 0) resolve(undefined); });
+      });
+      if (!interaction) throw new Error(signal?.aborted ? "aborted" : "expired");
+      if (signal?.aborted) throw new Error("aborted");
+      const approved = interaction.customId.startsWith("repair-confirm:");
+      const resultContent = `${summary}\n\n${approved ? "Approved. I’ll continue with this repair." : "Cancelled. I didn’t make that change."}`;
+      await interaction.update({
+        content: resultContent,
+        components: [confirmationControls(token, true)],
+      });
+      this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: resultContent, sourceMessageId: sent.id });
+      return approved;
+    } catch {
+      const resultContent = `${summary}\n\n${signal?.aborted ? "This repair changed or stopped, so the approval was cancelled." : "Approval expired. I didn’t make that change."}`;
+      await sent.edit({ content: resultContent, components: [confirmationControls(token, true)] }).catch(() => undefined);
+      this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: resultContent, sourceMessageId: sent.id });
+      return false;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      collector.stop("settled");
+    }
+  }
+
   async deliverRepairMessage(delivery: RepairCaseOutboxItem, repairCase: RepairCase): Promise<void> {
     if (!this.client) throw new Error("Discord is not connected");
     const payload = delivery.payload;
@@ -140,7 +192,12 @@ export class DiscordBotService {
     const channel = await this.client.channels.fetch(repairCase.threadId);
     if (!channel?.isTextBased() || !("send" in channel)) throw new Error("Repair thread is unavailable");
     if (channel.isThread() && channel.archived && !channel.locked) await channel.setArchived(false, "Repair work resumed");
-    const sent = await channel.send({ content: truncateDiscord(content), allowedMentions: { parse: [] } });
+    const sent = await channel.send({
+      content: truncateDiscord(content),
+      allowedMentions: { parse: [] },
+      nonce: `repair-${delivery.id}`,
+      enforceNonce: true,
+    });
     this.repairCases?.addMessage(repairCase.id, { role: "assistant", content: truncateDiscord(content), sourceMessageId: sent.id });
     await this.settleRepairIndicators(repairCase);
   }
@@ -180,7 +237,20 @@ export class DiscordBotService {
     try {
       if (existingCase) {
         this.repairCases.setAuthorizationActor(existingCase.id, message.author.id);
-        await this.startRepairCaseActivity(existingCase);
+        if (isCancellationRequest(content)) {
+          const cancelled = this.repairCaseService.cancel(existingCase.id, `message:${message.id}`);
+          if (cancelled?.status === "cancelled") {
+            this.repairCases.addMessage(existingCase.id, { role: "user", content, sourceMessageId: message.id, createdAt: message.createdAt, metadata: { userId: message.author.id, roles } });
+            this.repairCases.enqueueDelivery(existingCase.id, "discord_message", { content: "I’ve stopped this repair. Any download already running in another service may continue there." }, { dedupeKey: `${existingCase.id}:cancel:${message.id}` });
+            this.repairCaseService.refreshScheduling();
+            this.conversations.recordProcessedMessage(message.id);
+            return;
+          }
+          await message.reply({ content: "This repair is not currently running, so there’s nothing to stop.", allowedMentions: { parse: [], repliedUser: false } });
+          this.conversations.recordProcessedMessage(message.id);
+          return;
+        }
+        await this.startRepairIndicators(existingCase.id, message, message.channel);
         this.repairCaseService.notifyNewMessage(existingCase.id, {
           content,
           sourceMessageId: message.id,
@@ -188,11 +258,14 @@ export class DiscordBotService {
           metadata: { userId: message.author.id, roles },
         });
         this.conversations.recordProcessedMessage(message.id);
+        if (/^(?:media repair|general media help request)$/i.test(existingCase.title) || existingCase.title === provisionalRepairTitle(existingCase.objective)) {
+          void this.refineRepairTitle(existingCase, content);
+        }
         return;
       }
 
       let threadId = message.channelId;
-      const title = await this.createRepairTitle(content);
+      const title = provisionalRepairTitle(content);
       if (message.guildId) {
         const thread = message.channel.isThread()
           ? message.channel
@@ -227,6 +300,8 @@ export class DiscordBotService {
       }
       const targetChannel = message.guildId ? await message.client.channels.fetch(threadId) : message.channel;
       await this.startRepairIndicators(repairCase.id, message, targetChannel?.isTextBased() ? targetChannel : message.channel);
+      this.repairCases.enqueueDelivery(repairCase.id, "discord_message", { content: "I’ve started looking into this. I’ll update this thread as I find something useful." }, { dedupeKey: `${repairCase.id}:acknowledged` });
+      this.repairCaseService.refreshScheduling();
       this.repairCaseService.notifyNewMessage(repairCase.id, {
         content,
         sourceMessageId: message.id,
@@ -234,6 +309,7 @@ export class DiscordBotService {
         metadata: { userId: message.author.id, roles },
       });
       this.conversations.recordProcessedMessage(message.id);
+      void this.refineRepairTitle(repairCase, content);
     } catch (error) {
       this.logger.error({ err: error, messageId: message.id }, "Failed to start or update repair case");
       await message.reply({ content: "I couldn't start that repair. Please check my thread permissions and try again.", allowedMentions: { parse: [], repliedUser: false } });
@@ -243,18 +319,40 @@ export class DiscordBotService {
   }
 
   private async startRepairIndicators(caseId: string, message: Message, typingChannel: Message["channel"]): Promise<void> {
-    this.repairIndicators.get(caseId)?.stop();
+    const previous = this.repairIndicators.get(caseId);
+    previous?.stop();
+    await previous?.reactions.clear();
     const reactions = new MessageReactionTracker(message, readRuntimeSettings(this.store).discord.reactionsEnabled, this.logger);
-    await reactions.reset(selectInitialReaction(message.content));
+    await reactions.reset("👀");
     const typing = startTypingRefreshForChannel(typingChannel, this.logger, message.id);
-    const progress = startReactionProgress(reactions, message.content);
     this.repairIndicators.set(caseId, {
       reactions,
       stop: () => {
         typing.stop();
-        progress.stop();
       },
     });
+  }
+
+  async setRepairCaseStage(caseId: string, stage: "diagnosing" | "repairing" | "waiting" | "resolved" | "needs_input" | "blocked" | "cancelled"): Promise<void> {
+    const indicators = this.repairIndicators.get(caseId);
+    if (!indicators) return;
+    const emoji = { diagnosing: "🔎", repairing: "🛠️", waiting: "⏳", resolved: "✅", needs_input: "❓", blocked: "⚠️", cancelled: "⛔" }[stage];
+    await indicators.reactions.set(emoji);
+  }
+
+  private async refineRepairTitle(repairCase: RepairCase, content: string): Promise<void> {
+    const title = await this.createRepairTitle(content);
+    if (title === "Media repair" || title === repairCase.title) return;
+    if (this.repairCases?.get(repairCase.id)?.title !== repairCase.title) return;
+    const channel = await this.client?.channels.fetch(repairCase.threadId).catch(() => undefined);
+    if (channel?.isThread()) {
+      const renamed = await channel.setName(title, "Refined Plex Repairman issue title").then(() => true).catch((error) => {
+        this.logger.debug({ err: error, caseId: repairCase.id }, "Failed to refine repair thread title");
+        return false;
+      });
+      if (!renamed) return;
+    }
+    this.repairCases?.setTitle(repairCase.id, title);
   }
 
   private async createRepairTitle(content: string): Promise<string> {
@@ -277,7 +375,9 @@ export class DiscordBotService {
       ? "✅"
       : repairCase.status === "waiting"
         ? "⏳"
-        : repairCase.status === "cancelled"
+        : repairCase.status === "needs_input"
+          ? "❓"
+          : repairCase.status === "cancelled"
           ? "⛔"
           : "⚠️";
     await indicators.reactions.set(emoji);
@@ -393,6 +493,18 @@ class MessageReactionTracker {
     await this.chain;
   }
 
+  async clear(): Promise<void> {
+    if (!this.enabled || !this.currentEmoji) return;
+    const emoji = this.currentEmoji;
+    this.chain = this.chain.then(async () => {
+      const existing = this.message.reactions.cache.get(emoji);
+      const botUserId = this.message.client.user?.id;
+      if (botUserId) await existing?.users.remove(botUserId);
+      this.currentEmoji = undefined;
+    }).catch((error) => this.logger.debug({ err: error, messageId: this.message.id, emoji }, "Failed to clear Discord reaction"));
+    await this.chain;
+  }
+
   private async apply(emoji: string): Promise<void> {
     if (this.currentEmoji === emoji) return;
 
@@ -436,33 +548,18 @@ function canSendTyping(channel: Message["channel"]): channel is Message["channel
   return "sendTyping" in channel && typeof channel.sendTyping === "function";
 }
 
-function startReactionProgress(reactions: MessageReactionTracker, content: string): { stop: () => void } {
-  const emojis = uniqueEmojis([selectInitialReaction(content), "🤔", "🧐", "🔎", "🛠️"]);
-  let index = 0;
-
-  const interval = setInterval(() => {
-    index = (index + 1) % emojis.length;
-    void reactions.set(emojis[index] ?? "🤔");
-  }, 10_000);
-
-  return {
-    stop: () => clearInterval(interval),
-  };
+function provisionalRepairTitle(content: string): string {
+  const cleaned = content.replace(/[^a-zA-Z0-9 '\-:]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.slice(0, 70) || "Media repair";
 }
 
-function selectInitialReaction(content: string): string {
-  const normalized = content.toLowerCase();
-
-  if (/\b(fix|repair|replace|delete|remove|grab|download|upgrade|monitor)\b/.test(normalized)) return "🛠️";
-  if (/\b(audio|language|dub|subtitle|subtitles|subs|english|japanese|multi-language|multilanguage)\b/.test(normalized)) return "🔊";
-  if (/\b(search|find|missing|where|why|available|exists?)\b/.test(normalized)) return "🔎";
-  if (/\b(movie|film|radarr|theatrical)\b/.test(normalized)) return "🎬";
-  if (/\b(show|series|season|episode|anime|sonarr|specials?|s\d{1,2}e\d{1,2})\b/.test(normalized)) return "📺";
-  if (/\b(wrong|weird|broken|bad|issue|problem)\b/.test(normalized)) return "🧐";
-
-  return "👀";
+function isCancellationRequest(content: string): boolean {
+  return /^(?:please\s+)?(?:stop|cancel|never\s*mind|nevermind|don'?t\s+continue)(?:\s+(?:this|the)\s+repair)?[.!\s]*$/i.test(content.trim());
 }
 
-function uniqueEmojis(emojis: string[]): string[] {
-  return [...new Set(emojis)];
+function confirmationControls(token: string, disabled: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`repair-confirm:${token}`).setLabel("Confirm").setStyle(ButtonStyle.Success).setDisabled(disabled),
+    new ButtonBuilder().setCustomId(`repair-cancel:${token}`).setLabel("Cancel").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+  );
 }

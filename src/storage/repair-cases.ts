@@ -226,6 +226,13 @@ export class RepairCaseStore {
     return result.changes === 1 ? this.get(id) : undefined;
   }
 
+  setTitle(id: string, title: string): RepairCase | undefined {
+    const now = this.timestamp();
+    const result = this.db.prepare("UPDATE repair_cases SET title = ?, updated_at = ? WHERE id = ?")
+      .run(title.slice(0, 70), now, id);
+    return result.changes === 1 ? this.get(id) : undefined;
+  }
+
   reopen(id: string, actor?: string): RepairCase | undefined {
     return this.db.transaction(() => {
       const current = this.get(id);
@@ -289,7 +296,7 @@ export class RepairCaseStore {
         this.db.prepare("INSERT INTO repair_case_wakes (case_id, type, due_at, created_at) VALUES (?, 'timer', ?, ?)")
           .run(caseId, timestamp(wake.dueAt), now);
       } else {
-        const fallbackAt = timestamp(wake.fallbackAt ?? new Date(Date.parse(now) + 6 * 60 * 60_000));
+        const fallbackAt = timestamp(wake.fallbackAt ?? new Date(Date.parse(now) + eventFallbackMs(wake.eventType)));
         this.db.prepare(`INSERT INTO repair_case_wakes (case_id, type, provider, event_type, media_id, created_at)
           VALUES (?, 'arr_event', ?, ?, ?, ?)`).run(caseId, wake.provider, wake.eventType ?? null, wake.mediaId ?? null, now);
         this.db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE case_id = ?").run(fallbackAt, caseId);
@@ -329,7 +336,9 @@ export class RepairCaseStore {
   }
 
   nextDeliveryDueAt(): string | undefined {
-    return (this.db.prepare("SELECT MIN(available_at) AS due_at FROM repair_case_outbox WHERE status = 'pending'").get() as { due_at: string | null }).due_at ?? undefined;
+    return (this.db.prepare(`SELECT MIN(current.available_at) AS due_at FROM repair_case_outbox current
+      WHERE current.status = 'pending' AND NOT EXISTS (SELECT 1 FROM repair_case_outbox earlier
+        WHERE earlier.case_id = current.case_id AND earlier.id < current.id AND earlier.status IN ('pending','claimed'))`).get() as { due_at: string | null }).due_at ?? undefined;
   }
 
   claimDueTimers(limit = 100, now: Date | string = this.now()): RepairCase[] {
@@ -467,7 +476,11 @@ export class RepairCaseStore {
   claimDeliveries(limit = 20): RepairCaseOutboxItem[] {
     return this.db.transaction(() => {
       const now = this.timestamp();
-      const rows = this.db.prepare("SELECT id FROM repair_case_outbox WHERE status = 'pending' AND available_at <= ? ORDER BY id LIMIT ?")
+      const rows = this.db.prepare(`SELECT current.id FROM repair_case_outbox current
+        WHERE current.status = 'pending' AND current.available_at <= ?
+          AND NOT EXISTS (SELECT 1 FROM repair_case_outbox earlier
+            WHERE earlier.case_id = current.case_id AND earlier.id < current.id AND earlier.status IN ('pending','claimed'))
+        ORDER BY current.id LIMIT ?`)
         .all(now, Math.max(1, limit)) as Array<{ id: number }>;
       if (rows.length === 0) return [];
       const ids = rows.map((row) => row.id);
@@ -531,3 +544,8 @@ function timestamp(value: Date | string): string { return typeof value === "stri
 function json(value: unknown): string | null { return value === undefined ? null : JSON.stringify(value) ?? "null"; }
 function parseJson(value: string | null): unknown { return value === null ? undefined : JSON.parse(value); }
 function objectDetails(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : value === undefined ? {} : { details: value }; }
+function eventFallbackMs(eventType?: string): number {
+  if (eventType === "download" || eventType === "import") return 15 * 60_000;
+  if (eventType === "grab") return 60 * 60_000;
+  return 30 * 60_000;
+}

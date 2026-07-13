@@ -32,6 +32,9 @@ export type AgentRequestContext = {
   sourceMessageId?: string;
   recentMessages?: ConversationMessage[];
   onProgress?: (update: AgentProgressUpdate) => Promise<void>;
+  requestConfirmation?: (summary: string) => Promise<boolean>;
+  consumeConfirmation?: (action: string) => boolean;
+  abortSignal?: AbortSignal;
   caseControl?: RepairCaseControl;
 };
 
@@ -236,6 +239,7 @@ export class PiAgentService {
     let control: RepairCaseControlResult | undefined;
     const context: AgentRequestContext = {
       ...params.context,
+      abortSignal: params.signal,
       caseControl: {
         webhookProviders: params.webhookProviders,
         history: params.messages,
@@ -324,7 +328,7 @@ export class PiAgentService {
     await new Promise<void>((resolve) => this.coordinatorIdleWaiters.push(resolve));
   }
 
-  async runToolAgentTask(task: ToolAgentTask, roles: string[], signal?: AbortSignal): Promise<string> {
+  async runToolAgentTask(task: ToolAgentTask, roles: string[], signal?: AbortSignal, approvedAction?: string): Promise<string> {
     if (!isToolProfile(task.toolProfile)) throw new Error(`Unknown tool profile: ${task.toolProfile}`);
     const settings = readRuntimeSettings(this.store);
     const prompt = [
@@ -336,6 +340,7 @@ export class PiAgentService {
       .filter(Boolean)
       .join("\n\n");
 
+    let confirmationConsumed = false;
     return this.runAgentSession({
       systemPrompt: isRepairToolProfile(task.toolProfile) ? REPAIR_AGENT_INSTRUCTIONS : TOOL_AGENT_INSTRUCTIONS,
       prompt,
@@ -346,6 +351,11 @@ export class PiAgentService {
         roles,
         conversationKey: task.conversationKey,
         sourceMessageId: task.sourceMessageId,
+        consumeConfirmation: (action) => {
+          if (confirmationConsumed || !approvedAction || action !== approvedAction) return false;
+          confirmationConsumed = true;
+          return true;
+        },
       }, TOOL_PROFILES[task.toolProfile]),
       thinkingLevel: settings.ai.thinkingLevel,
       signal,
@@ -426,10 +436,13 @@ export class PiAgentService {
       return this.queue;
     };
     const availableProfiles = this.availableToolProfiles(context);
-    let progressSent = false;
+    let progressCount = 0;
+    const progressMessages = new Set<string>();
     const reportTasksStarted = async (titles: string[], message: string) => {
-      if (progressSent || !context.onProgress) return;
-      progressSent = true;
+      const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+      if (progressCount >= 3 || progressMessages.has(normalized) || !context.onProgress) return;
+      progressCount += 1;
+      progressMessages.add(normalized);
       try {
         await context.onProgress({ type: "tasks_started", titles, message });
       } catch (error) {
@@ -477,6 +490,26 @@ export class PiAgentService {
           await reportTasksStarted(params.tasks.map((task) => task.title), params.progressMessage);
           const completed = await Promise.all(tasks.map((task) => queue().waitForTask(task.id)));
           return toolResponse(completed.map(summarizeTask));
+        },
+      }),
+      defineTool({
+        name: "confirm_and_start_repair_agent",
+        label: "Confirm and start repair",
+        description: "Ask the requesting Discord user to approve one exact repair task, then run it only if approved. Use after read-only diagnosis identifies exact targets and parameters.",
+        parameters: Type.Object({
+          ...taskProperties,
+          approvedAction: Type.String({ description: "The exact action string that the repair tool will submit to server policy. Approval authorizes this string once.", maxLength: 1000 }),
+          progressMessage: progressMessageSchema,
+        }),
+        execute: async (_toolCallId, params: StartToolAgentParams & { approvedAction: string }) => {
+          this.assertToolProfileAllowed(params.toolProfile, context);
+          if (!isRepairToolProfile(params.toolProfile)) throw new Error("Confirmation is only for repair profiles");
+          if (!context.requestConfirmation) throw new Error("Discord confirmation is unavailable for this request");
+          const approved = await context.requestConfirmation(params.approvedAction);
+          if (!approved || context.abortSignal?.aborted) return toolResponse({ approved: false, message: "The user declined, the approval expired, or the repair changed" });
+          const task = queue().enqueue({ ...this.toToolAgentTaskRequest(params, context), approvedAction: params.approvedAction });
+          await reportTasksStarted([params.title], params.progressMessage);
+          return toolResponse(summarizeTask(await queue().waitForTask(task.id)));
         },
       }),
       defineTool({

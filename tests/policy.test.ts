@@ -3,7 +3,7 @@ import test from "node:test";
 import { authorizeRepair, canStartRepairWorker } from "../src/agent/policy.js";
 import type { RuntimeSettings } from "../src/domain/settings.js";
 
-test("repair workers require confirmation to be disabled and satisfy configured roles", () => {
+test("repair workers remain available for button confirmation and satisfy configured roles", () => {
   const settings = runtimeSettings();
   assert.equal(canStartRepairWorker(settings, { roles: [] }), true);
 
@@ -12,7 +12,7 @@ test("repair workers require confirmation to be disabled and satisfy configured 
   assert.equal(canStartRepairWorker(settings, { roles: ["repair-role"] }), true);
 
   settings.repair.requireConfirmation = true;
-  assert.equal(canStartRepairWorker(settings, { roles: ["repair-role"] }), false);
+  assert.equal(canStartRepairWorker(settings, { roles: ["repair-role"] }), true);
 });
 
 test("model-supplied confirmation cannot bypass confirmation policy", () => {
@@ -20,6 +20,12 @@ test("model-supplied confirmation cannot bypass confirmation policy", () => {
   settings.repair.requireConfirmation = true;
   const result = authorizeRepair(settings, { roles: [] }, { action: "refresh", confirmed: true });
   assert.equal((result?.details as { confirmationRequired?: boolean }).confirmationRequired, true);
+  let consumed = false;
+  const context = { roles: [], consumeConfirmation: (action: string) => !consumed && action === "refresh" ? (consumed = true) : false };
+  assert.equal(authorizeRepair(settings, context, { action: "refresh", confirmed: false }), undefined);
+  assert.equal((authorizeRepair(settings, context, { action: "refresh" })?.details as { confirmationRequired?: boolean }).confirmationRequired, true);
+  const mismatch = authorizeRepair(settings, { roles: [], consumeConfirmation: (action) => action === "refresh" }, { action: "different" });
+  assert.equal((mismatch?.details as { confirmationRequired?: boolean }).confirmationRequired, true);
 });
 
 test("destructive actions require destructive repairs to be enabled", () => {

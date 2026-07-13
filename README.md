@@ -28,7 +28,7 @@ The web portal has no built-in authentication. Keep it on a trusted network or p
 
 Repair execution is disabled by default:
 
-- `Require confirmation` currently blocks all repair execution because action-specific confirmation is not implemented. The bot can still diagnose issues and propose repairs.
+- `Require confirmation` asks the requesting user to approve one exact server-described repair action with temporary Discord Confirm/Cancel buttons before that action can execute.
 - Disabling confirmation permits direct non-destructive repairs for users who satisfy the configured repair-role policy.
 - `Allow destructive repairs` must also be enabled for queue removal, file deletion, and movie or series removal.
 - Repair policy is checked again when each write action runs.

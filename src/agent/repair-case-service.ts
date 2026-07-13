@@ -42,6 +42,7 @@ export type RepairCaseServiceOptions = {
   onRunStart?: RepairCaseRunStartCallback;
   onDelivery?: RepairCaseDeliveryCallback;
   onSystemEvent?: RepairCaseSystemEventCallback;
+  onCancelWork?: (caseId: string) => Promise<void> | void;
   maxConcurrent?: number;
   leaseMs?: number;
   maxRuntimeMs?: number;
@@ -112,7 +113,13 @@ export class RepairCaseService {
       : ["resolved", "exhausted", "cancelled"].includes(current.status)
         ? this.store.reopen(caseId, actor) ?? this.store.get(caseId)!
         : this.store.get(caseId)!;
-    if (repairCase.leaseOwner) this.pendingMessages.add(caseId);
+    if (repairCase.leaseOwner) {
+      this.pendingMessages.add(caseId);
+      void this.options.onCancelWork?.(caseId);
+      if (this.options.onDelivery) this.store.enqueueDelivery(caseId, "discord_message", { content: "I saw your update and I’m adjusting the repair now." }, { dedupeKey: `${caseId}:follow-up:${message.sourceMessageId ?? Date.now()}` });
+      this.controllers.get(caseId)?.abort(new Error(`Repair case ${caseId} received a new user message`));
+      void this.flushDeliveries();
+    }
     if (["ready", "working", "verifying"].includes(repairCase.status) && !repairCase.leaseOwner) this.enqueue(caseId);
     this.drain();
     this.scheduleWake();
@@ -132,6 +139,7 @@ export class RepairCaseService {
     this.removeQueued(id);
     this.pendingMessages.delete(id);
     this.controllers.get(id)?.abort(new Error(`Repair case ${id} was cancelled`));
+    void this.options.onCancelWork?.(id);
     const result = this.store.cancel(id, actor);
     this.scheduleWake();
     return result ?? this.store.get(id);
@@ -152,7 +160,10 @@ export class RepairCaseService {
     this.wakeTimer = undefined;
     this.queue.length = 0;
     this.queued.clear();
-    for (const controller of this.controllers.values()) controller.abort(new Error("Repair case service is shutting down"));
+    for (const [id, controller] of this.controllers) {
+      void this.options.onCancelWork?.(id);
+      controller.abort(new Error("Repair case service is shutting down"));
+    }
     await this.waitForIdle();
   }
 
@@ -163,6 +174,7 @@ export class RepairCaseService {
       if (["resolved", "exhausted", "cancelled"].includes(repairCase.status)) continue;
       this.removeQueued(repairCase.id);
       this.pendingMessages.delete(repairCase.id);
+      void this.options.onCancelWork?.(repairCase.id);
       this.controllers.get(repairCase.id)?.abort(new Error(`Repair case ${repairCase.id} was cleared`));
       this.store.cancel(repairCase.id, actor);
     }
@@ -209,11 +221,26 @@ export class RepairCaseService {
     this.controllers.set(id, controller);
     let timedOut = false;
     let runAgain = false;
+    let lastProgressAt = Date.now();
+    let heartbeatCount = 0;
     const timeout = setTimeout(() => {
       timedOut = true;
+      void this.options.onCancelWork?.(id);
       controller.abort(new Error(`Repair case ${id} exceeded max runtime`));
     }, Math.min(this.options.maxRuntimeMs ?? DEFAULT_RUNTIME_MS, leaseMs));
     timeout.unref?.();
+    const heartbeat = setInterval(() => {
+      if (heartbeatCount >= 2 || Date.now() - lastProgressAt < 120_000) return;
+      const current = this.store.get(id);
+      if (!current || current.leaseOwner !== this.ownerId) return;
+      heartbeatCount += 1;
+      lastProgressAt = Date.now();
+      const content = "I’m still working through this. I’ll update you when there’s a useful result.";
+      this.store.addActivity(id, "progress", content, this.ownerId);
+      this.store.enqueueDelivery(id, "discord_message", { content }, { dedupeKey: `${id}:attempt:${repairCase.attempts}:heartbeat:${heartbeatCount}` });
+      void this.flushDeliveries();
+    }, 30_000);
+    heartbeat.unref?.();
 
     try {
       try {
@@ -228,6 +255,7 @@ export class RepairCaseService {
         progress: async (progress) => {
           const current = this.store.get(id);
           if (current && current.leaseOwner === this.ownerId) {
+            lastProgressAt = Date.now();
             this.store.addActivity(id, "progress", progress, this.ownerId);
             this.store.enqueueDelivery(id, "discord_message", progress);
             await this.options.onProgress?.(current, progress);
@@ -244,6 +272,10 @@ export class RepairCaseService {
           this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
           await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
           await this.flushDeliveries();
+          runAgain = true;
+        } else if (this.pendingMessages.delete(id)) {
+          this.store.addActivity(id, "rerun_requested", { reason: "new_thread_message" }, this.ownerId);
+          this.store.releaseLease(id, this.ownerId, "ready");
           runAgain = true;
         }
         return;
@@ -278,6 +310,10 @@ export class RepairCaseService {
         this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
         await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
         runAgain = true;
+      } else if (controller.signal.aborted && this.pendingMessages.delete(id)) {
+        this.store.addActivity(id, "rerun_requested", { reason: "new_thread_message" }, this.ownerId);
+        this.store.releaseLease(id, this.ownerId, "ready");
+        runAgain = true;
       } else if (!controller.signal.aborted) {
         const details = { error: error instanceof Error ? error.message : String(error) };
         this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details });
@@ -285,6 +321,7 @@ export class RepairCaseService {
       }
     } finally {
       clearTimeout(timeout);
+      clearInterval(heartbeat);
       const current = this.store.get(id);
       if (current?.leaseOwner === this.ownerId) {
         if (this.stopping) {
@@ -318,15 +355,17 @@ export class RepairCaseService {
   }
 
   private async reportSystemEvent(repairCase: RepairCase, event: RepairCaseSystemEvent, dedupeKey: string): Promise<void> {
-    if (!this.options.onSystemEvent) return;
-    try {
-      const content = (await this.options.onSystemEvent(repairCase, event))?.trim();
-      if (!content) return;
-      this.store.addActivity(repairCase.id, "user_update", { message: content, event: event.type }, this.ownerId);
-      this.store.enqueueDelivery(repairCase.id, "discord_message", { content }, { dedupeKey });
-    } catch (error) {
-      this.options.logger?.warn({ error, caseId: repairCase.id, event: event.type }, "Failed to generate repair case status update");
+    let content = event.type === "timeout_continuing" ? undefined : fallbackSystemMessage(event.type);
+    if (!content) {
+      try {
+        content = (await this.options.onSystemEvent?.(repairCase, event))?.trim();
+      } catch (error) {
+        this.options.logger?.warn({ error, caseId: repairCase.id, event: event.type }, "Failed to generate repair case status update");
+      }
     }
+    content ||= fallbackSystemMessage(event.type);
+    this.store.addActivity(repairCase.id, "user_update", { message: content, event: event.type }, this.ownerId);
+    this.store.enqueueDelivery(repairCase.id, "discord_message", { content }, { dedupeKey });
   }
 
   private scheduleWake(): void {
@@ -360,6 +399,12 @@ export class RepairCaseService {
   private assertAccepting(): void {
     if (this.stopping) throw new Error("Repair case service is shutting down");
   }
+}
+
+function fallbackSystemMessage(type: RepairCaseSystemEvent["type"]): string {
+  if (type === "timeout_continuing") return "This is taking longer than expected, but I’m continuing automatically and will update you when I have a useful result.";
+  if (type === "attempts_exhausted") return "I couldn’t complete this repair after several attempts. Please add any new details here and I can try again.";
+  return "I hit an unexpected problem and stopped this repair safely. Add a message here if you’d like me to try again.";
 }
 
 function resumeContext(activity: ReturnType<RepairCaseStore["latestActivity"]>): RepairCaseRunContext["resume"] {

@@ -36,6 +36,22 @@ test("cases, complete messages, activity, defaults, and outbox persist across re
   db.close();
 });
 
+test("delivery retries preserve per-case order without scheduling later messages early", (t) => {
+  let now = new Date("2026-07-10T12:00:00.000Z");
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("ordered-delivery"));
+  const first = store.enqueueDelivery(repairCase.id, "discord_message", { content: "first" });
+  store.enqueueDelivery(repairCase.id, "discord_message", { content: "second" });
+  const claimed = store.claimDeliveries();
+  assert.deepEqual(claimed.map((item) => item.id), [first.id]);
+  const retry = store.settleDelivery(first.id, false, "temporary")!;
+  assert.equal(store.nextDeliveryDueAt(), retry.availableAt);
+  assert.deepEqual(store.claimDeliveries(), []);
+  now = new Date(Date.parse(retry.availableAt) + 1);
+  assert.deepEqual(store.claimDeliveries().map((item) => item.id), [first.id]);
+});
+
 test("a Discord thread can own only one repair case", (t) => {
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db);
@@ -113,7 +129,7 @@ test("event waits receive a bounded fallback and webhook context reaches the nex
   const repairCase = store.create(caseParams("webhook-resume"));
   store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   assert.equal(store.getWake(repairCase.id)?.type, "arr_event");
-  assert.equal(store.nextTimerDueAt(), "2026-07-10T18:00:00.000Z");
+  assert.equal(store.nextTimerDueAt(), "2026-07-10T12:15:00.000Z");
 
   let observedResume: unknown;
   const service = new RepairCaseService(store, {
@@ -130,7 +146,7 @@ test("event waits receive a bounded fallback and webhook context reaches the nex
 
   const fallback = store.create(caseParams("webhook-fallback"));
   store.setWake(fallback.id, { type: "arr_event", provider: "sonarr", mediaId: "episode:99" });
-  now = new Date("2026-07-10T18:00:00.001Z");
+  now = new Date("2026-07-10T12:30:00.001Z");
   assert.deepEqual(store.claimDueTimers().map((item) => item.id), [fallback.id]);
   assert.equal((store.latestActivity(fallback.id)?.details as { reason?: string }).reason, "webhook_fallback");
 });
@@ -231,6 +247,7 @@ test("runner timeout remains visible and automatically continues when an aborted
   const store = new RepairCaseStore(db);
   const repairCase = store.create(caseParams("timeout-visible"));
   const delivered: unknown[] = [];
+  const cancelledWork: string[] = [];
   let runs = 0;
   const service = new RepairCaseService(store, {
     leaseMs: 100,
@@ -243,6 +260,7 @@ test("runner timeout remains visible and automatically continues when an aborted
     },
     onSystemEvent: async (_current, event) => event.type === "timeout_continuing" ? "Generated continuation update" : undefined,
     onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+    onCancelWork: (caseId) => { cancelledWork.push(caseId); },
   });
   service.start();
   await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
@@ -250,6 +268,7 @@ test("runner timeout remains visible and automatically continues when an aborted
   assert.equal(store.get(repairCase.id)?.attempts, 2);
   assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "user_update" && (entry.details as { event?: string }).event === "timeout_continuing"), true);
   assert.match(JSON.stringify(delivered[0]), /Generated continuation update/);
+  assert.deepEqual(cancelledWork, [repairCase.id]);
   await service.shutdown();
 });
 
@@ -265,6 +284,31 @@ test("a new thread message reopens a completed repair without another mention", 
   await waitUntil(() => store.get(repairCase.id)?.status === "resolved" && store.get(repairCase.id)?.attempts === 1);
   assert.equal(store.listMessages(repairCase.id).at(-1)?.sourceMessageId, "follow-up");
   assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "status_changed" && (entry.details as { reason?: string }).reason === "new_thread_message"), true);
+  await service.shutdown();
+});
+
+test("a follow-up interrupts stale running work and reruns with the new message", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("interrupt-follow-up"));
+  let runs = 0;
+  const service = new RepairCaseService(store, {
+    runner: async (_current, context) => {
+      runs += 1;
+      if (runs === 1) {
+        await waitForAbort(context.signal);
+        throw context.signal.reason;
+      }
+      assert.equal(context.messages.at(-1)?.content, "Actually, check episode four instead.");
+      return { status: "resolved" };
+    },
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "working");
+  service.notifyNewMessage(repairCase.id, { content: "Actually, check episode four instead.", sourceMessageId: "correction" });
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.equal(runs, 2);
+  assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "rerun_requested"), true);
   await service.shutdown();
 });
 
