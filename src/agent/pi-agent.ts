@@ -16,6 +16,7 @@ import type { RuntimeSettings } from "../domain/settings.js";
 import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
+import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
@@ -42,6 +43,7 @@ export type RepairCaseControl = {
   webhookProviders: Array<"sonarr" | "radarr">;
   history: Array<{ role: string; content: string; userId?: string; createdAt: string }>;
   setResult: (result: RepairCaseControlResult) => void;
+  resume?: { source: "webhook" | "timer"; provider?: string; eventType?: string; mediaIds?: string[] };
 };
 
 export type RepairCaseAgentResult = { response: string; control?: RepairCaseControlResult };
@@ -58,6 +60,7 @@ type AgentSessionParams = {
   tools: ReturnType<typeof defineTool>[];
   thinkingLevel?: RuntimeSettings["ai"]["thinkingLevel"];
   signal?: AbortSignal;
+  allowEmptyResponse?: boolean;
 };
 
 type ToolAgentTaskParams = {
@@ -151,6 +154,8 @@ type ManualImportToolParams = {
 
 type ManualImportExecuteToolParams = ManualImportToolParams & {
   importIds: number[];
+  importMode?: ManualImportMode;
+  overrides?: ManualImportOverride[];
   confirmed?: boolean;
 };
 
@@ -224,6 +229,7 @@ export class PiAgentService {
     context: Omit<AgentRequestContext, "recentMessages" | "caseControl">;
     webhookProviders: Array<"sonarr" | "radarr">;
     signal?: AbortSignal;
+    resume?: RepairCaseControl["resume"];
   }): Promise<RepairCaseAgentResult> {
     if (!this.queue) throw new Error("Tool-agent queue is not initialized");
     if (this.stopping) throw new Error("Plex Repairman is shutting down");
@@ -237,6 +243,7 @@ export class PiAgentService {
           if (control) throw new Error("A repair-case lifecycle decision was already recorded");
           control = result;
         },
+        resume: params.resume,
       },
     };
     const settings = readRuntimeSettings(this.store);
@@ -246,6 +253,7 @@ export class PiAgentService {
       `Available event integrations: ${params.webhookProviders.length ? params.webhookProviders.join(", ") : "none"}`,
       `Original objective: ${params.objective}`,
       params.checkpoint === undefined ? undefined : `Saved checkpoint: ${JSON.stringify(params.checkpoint)}`,
+      params.resume ? `Resume trigger: ${JSON.stringify(params.resume)}. Continue from the saved checkpoint; do not describe this as starting over.` : undefined,
       `Complete thread transcript:\n${transcript}`,
     ].filter(Boolean).join("\n\n");
     const response = await this.runAgentSession({
@@ -254,7 +262,9 @@ export class PiAgentService {
       tools: this.createOrchestrationTools(context),
       thinkingLevel: settings.ai.thinkingLevel,
       signal: params.signal,
+      allowEmptyResponse: true,
     });
+    if (!response && !control) throw new Error("Agent session completed without a response or lifecycle decision");
     return { response, control };
   }
 
@@ -397,7 +407,7 @@ export class PiAgentService {
       if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
       await session.prompt(params.prompt);
       const response = output.trim();
-      if (!response) throw new Error("Agent session completed without a response");
+      if (!response && !params.allowEmptyResponse) throw new Error("Agent session completed without a response");
       return response;
     } finally {
       unsubscribe();
@@ -861,6 +871,20 @@ export class PiAgentService {
         },
       }),
       defineTool({
+        name: "get_sonarr_command",
+        label: "Get Sonarr command status",
+        description: "Inspect a Sonarr command by ID to verify whether a search, refresh, rescan, or manual import completed.",
+        parameters: Type.Object({ commandId: Type.Integer({ minimum: 1, description: "Sonarr command ID" }) }),
+        execute: async (_toolCallId, params: { commandId: number }) => toolResponse(await clients().sonarr.getCommand(params.commandId)),
+      }),
+      defineTool({
+        name: "get_radarr_command",
+        label: "Get Radarr command status",
+        description: "Inspect a Radarr command by ID to verify whether it completed.",
+        parameters: Type.Object({ commandId: Type.Integer({ minimum: 1, description: "Radarr command ID" }) }),
+        execute: async (_toolCallId, params: { commandId: number }) => toolResponse(await clients().radarr.getCommand(params.commandId)),
+      }),
+      defineTool({
         name: "get_radarr_movie_releases",
         label: "Get Radarr movie releases",
         description: "List available Radarr releases for an existing movie ID before selecting a release to grab.",
@@ -1044,6 +1068,44 @@ export class PiAgentService {
         },
       }),
       defineTool({
+        name: "search_plex_library_section",
+        label: "Search a Plex library",
+        description: "Search a specific Plex library section by title and return actual library metadata, including rating keys. Prefer this over global search when verifying a known TV or movie library.",
+        parameters: Type.Object({
+          sectionId: Type.Number({ description: "Plex library section ID from list_plex_libraries" }),
+          title: Type.String({ description: "Media title to find in that library" }),
+        }),
+        execute: async (_toolCallId, params: { sectionId: number; title: string }) => toolResponse(await clients().plex.searchLibrarySection(params.sectionId, params.title)),
+      }),
+      defineTool({
+        name: "refresh_sonarr_series",
+        label: "Refresh Sonarr series metadata",
+        description: "Refresh metadata for an existing Sonarr series. Use when stale episode titles or air dates are blocking an import.",
+        parameters: Type.Object({
+          seriesId: Type.Number({ description: "Sonarr series ID" }),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: { seriesId: number; confirmed?: boolean }) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { action: `Refresh Sonarr series ID ${params.seriesId}`, confirmed: params.confirmed });
+          if (policy) return policy;
+          return toolResponse(await clients().sonarr.refreshSeries(params.seriesId));
+        },
+      }),
+      defineTool({
+        name: "rescan_sonarr_series",
+        label: "Rescan Sonarr series files",
+        description: "Rescan an existing Sonarr series folder for files already on disk, then verify the resulting command and episode state.",
+        parameters: Type.Object({
+          seriesId: Type.Number({ description: "Sonarr series ID" }),
+          confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
+        }),
+        execute: async (_toolCallId, params: { seriesId: number; confirmed?: boolean }) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { action: `Rescan Sonarr series ID ${params.seriesId}`, confirmed: params.confirmed });
+          if (policy) return policy;
+          return toolResponse(await clients().sonarr.rescanSeries(params.seriesId));
+        },
+      }),
+      defineTool({
         name: "grab_radarr_release",
         label: "Grab Radarr release",
         description: "Tell Radarr to grab a specific release returned by get_radarr_movie_releases. Requires confirmation when configured.",
@@ -1134,13 +1196,15 @@ export class PiAgentService {
       defineTool({
         name: "execute_radarr_manual_import",
         label: "Execute Radarr manual import",
-        description: "Execute Radarr manual import for IDs returned by preview_radarr_manual_import using the same folder/download/movie filters. Requires confirmation when configured.",
+        description: "Execute the actual Radarr ManualImport command for IDs returned by preview_radarr_manual_import. Use the same filters, set auto mode for download-client imports, then poll the returned command ID and verify the movie file.",
         parameters: Type.Object({
-          importIds: Type.Array(Type.Number(), { description: "Manual import candidate IDs from preview_radarr_manual_import" }),
+          importIds: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1, description: "Manual import candidate IDs from preview_radarr_manual_import" }),
           folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
           downloadId: Type.Optional(Type.String({ description: "Same download ID used for preview" })),
           itemId: Type.Optional(Type.Number({ description: "Same Radarr movie ID used for preview" })),
           filterExistingFiles: Type.Optional(Type.Boolean({ description: "Same filterExistingFiles value used for preview" })),
+          importMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("copy"), Type.Literal("move")], { description: "Use auto for download-client imports; otherwise choose copy or move" })),
+          overrides: manualImportOverridesSchema("Radarr movie ID", false),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
         execute: async (_toolCallId, params: ManualImportExecuteToolParams) => {
@@ -1151,21 +1215,23 @@ export class PiAgentService {
           });
           if (policy) return policy;
 
-          const results = await clients().radarr.executeManualImport(query, params.importIds);
+          const results = await clients().radarr.executeManualImport(query, params.importIds, { importMode: params.importMode, overrides: params.overrides });
           return toolResponse(results ?? { imported: true });
         },
       }),
       defineTool({
         name: "execute_sonarr_manual_import",
         label: "Execute Sonarr manual import",
-        description: "Execute Sonarr manual import for IDs returned by preview_sonarr_manual_import using the same folder/download/series/season filters. Requires confirmation when configured.",
+        description: "Execute the actual Sonarr ManualImport command for IDs returned by preview_sonarr_manual_import. Use explicit overrides only when the candidate mapping was verified, set auto mode for download-client imports, then poll the command ID and verify episode files.",
         parameters: Type.Object({
-          importIds: Type.Array(Type.Number(), { description: "Manual import candidate IDs from preview_sonarr_manual_import" }),
+          importIds: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1, description: "Manual import candidate IDs from preview_sonarr_manual_import" }),
           folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
           downloadId: Type.Optional(Type.String({ description: "Same download ID used for preview" })),
           itemId: Type.Optional(Type.Number({ description: "Same Sonarr series ID used for preview" })),
           seasonNumber: Type.Optional(Type.Number({ description: "Same season number used for preview" })),
           filterExistingFiles: Type.Optional(Type.Boolean({ description: "Same filterExistingFiles value used for preview" })),
+          importMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("copy"), Type.Literal("move")], { description: "Use auto for download-client imports; otherwise choose copy or move" })),
+          overrides: manualImportOverridesSchema("Sonarr series ID", true),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
         execute: async (_toolCallId, params: ManualImportExecuteToolParams) => {
@@ -1176,7 +1242,7 @@ export class PiAgentService {
           });
           if (policy) return policy;
 
-          const results = await clients().sonarr.executeManualImport(query, params.importIds);
+          const results = await clients().sonarr.executeManualImport(query, params.importIds, { importMode: params.importMode, overrides: params.overrides });
           return toolResponse(results ?? { imported: true });
         },
       }),
@@ -1605,6 +1671,19 @@ function pickDefined(value: object, keys: string[]): Record<string, unknown> {
 function manualImportQuery(params: ManualImportToolParams): ManualImportToolParams {
   const query = pickDefined(params, ["folder", "downloadId", "itemId", "seasonNumber", "filterExistingFiles"]);
   return query as ManualImportToolParams;
+}
+
+function manualImportOverridesSchema(itemLabel: string, episodes: boolean) {
+  return Type.Optional(Type.Array(Type.Object({
+    importId: Type.Integer({ minimum: 1, description: "Candidate ID being overridden" }),
+    itemId: Type.Optional(Type.Number({ description: itemLabel })),
+    episodeIds: Type.Optional(Type.Array(Type.Number(), { minItems: 1, description: episodes ? "Explicit Sonarr episode IDs" : "Unused for Radarr imports" })),
+    releaseGroup: Type.Optional(Type.String()),
+    quality: Type.Optional(Type.Any()),
+    languages: Type.Optional(Type.Array(Type.Any())),
+    indexerFlags: Type.Optional(Type.Number()),
+    releaseType: Type.Optional(Type.Any()),
+  }), { description: "Optional explicit mapping corrections matching Sonarr/Radarr Manual Import UI selections" }));
 }
 
 function setSeasonMonitored(value: unknown, seasonNumber: number, monitored: boolean): Record<string, unknown> {

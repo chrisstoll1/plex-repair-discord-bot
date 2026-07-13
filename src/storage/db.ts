@@ -118,6 +118,12 @@ function migrate(db: AppDatabase): void {
       ON repair_cases (status, updated_at);
     CREATE INDEX IF NOT EXISTS idx_repair_cases_thread_updated
       ON repair_cases (guild_id, thread_id, updated_at);
+    CREATE TRIGGER IF NOT EXISTS prevent_duplicate_repair_thread
+      BEFORE INSERT ON repair_cases
+      WHEN EXISTS (SELECT 1 FROM repair_cases WHERE guild_id = NEW.guild_id AND thread_id = NEW.thread_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'duplicate repair thread');
+      END;
     CREATE INDEX IF NOT EXISTS idx_repair_cases_lease
       ON repair_cases (lease_expires_at);
 
@@ -170,6 +176,7 @@ function migrate(db: AppDatabase): void {
       event_id TEXT NOT NULL,
       event_type TEXT NOT NULL,
       media_id TEXT,
+      media_ids_json TEXT,
       payload_json TEXT,
       received_at TEXT NOT NULL,
       UNIQUE (provider, event_id)
@@ -195,4 +202,21 @@ function migrate(db: AppDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_repair_case_outbox_pending
       ON repair_case_outbox (status, available_at, id);
   `);
+  ensureColumn(db, "repair_inbound_events", "media_ids_json", "TEXT");
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE repair_cases SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
+      cancelled_at = COALESCE(cancelled_at, ?)
+    WHERE status NOT IN ('resolved','exhausted','cancelled') AND EXISTS (
+      SELECT 1 FROM repair_cases newer
+      WHERE newer.guild_id = repair_cases.guild_id AND newer.thread_id = repair_cases.thread_id
+        AND (newer.updated_at > repair_cases.updated_at OR (newer.updated_at = repair_cases.updated_at AND newer.id > repair_cases.id))
+    )`).run(now);
+  db.exec("DELETE FROM repair_case_wakes WHERE case_id IN (SELECT id FROM repair_cases WHERE status = 'cancelled')");
+  db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE type = 'arr_event' AND due_at IS NULL")
+    .run(new Date(Date.now() + 6 * 60 * 60_000).toISOString());
+}
+
+function ensureColumn(db: AppDatabase, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

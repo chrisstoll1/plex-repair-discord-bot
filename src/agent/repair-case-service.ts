@@ -15,6 +15,7 @@ export type RepairCaseRunContext = {
   messages: RepairCaseMessage[];
   signal: AbortSignal;
   progress: (progress: unknown) => Promise<void>;
+  resume?: { source: "webhook" | "timer"; provider?: string; eventType?: string; mediaIds?: string[] };
 };
 
 export type RepairCaseRunResult = {
@@ -192,6 +193,8 @@ export class RepairCaseService {
   }
 
   private async run(id: string): Promise<void> {
+    const latestActivity = this.store.latestActivity(id);
+    const resume = resumeContext(latestActivity);
     const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
     const repairCase = this.store.claimRunnable(id, this.ownerId, leaseMs);
     if (!repairCase) {
@@ -221,6 +224,7 @@ export class RepairCaseService {
       const result = await this.options.runner(repairCase, {
         messages: this.store.listMessages(id),
         signal: controller.signal,
+        resume,
         progress: async (progress) => {
           const current = this.store.get(id);
           if (current && current.leaseOwner === this.ownerId) {
@@ -250,12 +254,17 @@ export class RepairCaseService {
         runAgain = true;
         return;
       }
-      if (result?.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
-      for (const delivery of result?.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
       if (result?.wake) {
         if (result.checkpoint !== undefined) this.store.transition(id, "verifying", { from: ["working", "verifying"], checkpoint: result.checkpoint, actor: this.ownerId });
         this.store.setWake(id, result.wake);
+        runAgain = this.store.get(id)?.status === "ready";
+        if (!runAgain) {
+          if (result.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
+          for (const delivery of result.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
+        }
       } else {
+        if (result?.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
+        for (const delivery of result?.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
         const status = result?.status ?? "needs_input";
         const transitioned = this.store.transition(id, status, { from: ["working", "verifying"], checkpoint: result?.checkpoint, actor: this.ownerId });
         runAgain = transitioned?.status === "ready" || transitioned?.status === "verifying";
@@ -305,6 +314,7 @@ export class RepairCaseService {
         this.options.logger?.error({ error, deliveryId: delivery.id }, "Repair case delivery failed");
       }
     }
+    this.scheduleWake();
   }
 
   private async reportSystemEvent(repairCase: RepairCase, event: RepairCaseSystemEvent, dedupeKey: string): Promise<void> {
@@ -350,4 +360,14 @@ export class RepairCaseService {
   private assertAccepting(): void {
     if (this.stopping) throw new Error("Repair case service is shutting down");
   }
+}
+
+function resumeContext(activity: ReturnType<RepairCaseStore["latestActivity"]>): RepairCaseRunContext["resume"] {
+  if (activity?.kind !== "status_changed" || !activity.details || typeof activity.details !== "object") return undefined;
+  const details = activity.details as { to?: string; provider?: string; eventType?: string; mediaIds?: string[]; reason?: string };
+  if (details.to !== "ready") return undefined;
+  if (details.eventType) {
+    return { source: "webhook", provider: details.provider ?? activity.actor?.split(":", 1)[0], eventType: details.eventType, mediaIds: details.mediaIds };
+  }
+  return details.reason === "webhook_fallback" || details.reason === "timer" ? { source: "timer" } : undefined;
 }

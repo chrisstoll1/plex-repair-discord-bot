@@ -11,6 +11,7 @@ export class DiscordBotService {
   private client: Client | undefined;
   private readonly processingMessageIds = new Set<string>();
   private readonly repairIndicators = new Map<string, RepairIndicators>();
+  private readonly repairMessageQueue = new KeyedSerialQueue();
   private repairCaseService?: RepairCaseService;
 
   constructor(
@@ -87,7 +88,10 @@ export class DiscordBotService {
         await message.reply({ content: "I couldn't start that repair. Please try again shortly.", allowedMentions: { parse: [], repliedUser: false } });
         return;
       }
-      await this.handleRepairCaseMessage(message, content, existingCase);
+      const repairKey = `${message.guildId ?? "dm"}:${message.channelId}`;
+      await this.repairMessageQueue.run(repairKey, async () => {
+        await this.handleRepairCaseMessage(message, content, this.findRepairCase(message.guildId ?? "", message.channelId));
+      });
       return;
     });
 
@@ -199,7 +203,7 @@ export class DiscordBotService {
             });
         threadId = thread.id;
       }
-      const repairCase = this.repairCases.create({
+      const created = this.repairCases.createOrGetByThread({
         guildId: message.guildId ?? "",
         threadId,
         source: message.id,
@@ -208,6 +212,19 @@ export class DiscordBotService {
         title,
         objective: content,
       });
+      const repairCase = created.repairCase;
+      if (!created.created) {
+        this.repairCases.setAuthorizationActor(repairCase.id, message.author.id);
+        await this.startRepairCaseActivity(repairCase);
+        this.repairCaseService.notifyNewMessage(repairCase.id, {
+          content,
+          sourceMessageId: message.id,
+          createdAt: message.createdAt,
+          metadata: { userId: message.author.id, roles },
+        });
+        this.conversations.recordProcessedMessage(message.id);
+        return;
+      }
       const targetChannel = message.guildId ? await message.client.channels.fetch(threadId) : message.channel;
       await this.startRepairIndicators(repairCase.id, message, targetChannel?.isTextBased() ? targetChannel : message.channel);
       this.repairCaseService.notifyNewMessage(repairCase.id, {

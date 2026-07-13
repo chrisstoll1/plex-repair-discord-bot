@@ -72,6 +72,8 @@ export type RepairCaseActivity = {
   id: string;
   repairId?: string;
   type: string;
+  source?: "user" | "bot" | "agent" | "system";
+  actor?: string;
   message?: string;
   status?: RepairCaseStatus;
   details?: unknown;
@@ -136,7 +138,7 @@ export const api = {
   clearRepairs: () => request<{ deleted: number }>("/api/repairs", { method: "DELETE" }),
   cancelRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.repair),
   resumeRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/resume`, { method: "POST" }).then((response) => response.repair),
-  getRepairActivity: (id: string) => request<{ activity: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/activity`).then((response) => response.activity),
+  getRepairActivity: (id: string) => request<{ timeline: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/timeline`).then((response) => response.timeline),
   getWebhookConfig: () => request<WebhookConfig>("/api/webhooks/config"),
   updateWebhookConfig: (config: Pick<WebhookConfig, "publicBaseUrl" | "sonarrEnabled" | "radarrEnabled">) => request<WebhookConfig>("/api/webhooks/config", { method: "PUT", body: JSON.stringify(config) }),
   rotateWebhookSecret: () => request<WebhookConfig>("/api/webhooks/rotate-secret", { method: "POST" }),

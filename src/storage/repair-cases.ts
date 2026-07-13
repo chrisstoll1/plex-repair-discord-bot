@@ -65,7 +65,7 @@ export type RepairCaseActivity = {
 
 export type RepairCaseWake =
   | { id?: number; caseId?: string; type: "timer"; dueAt: Date | string; createdAt?: string }
-  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; createdAt?: string };
+  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; fallbackAt?: Date | string; createdAt?: string };
 
 export type InboundArrEvent = {
   provider: string;
@@ -130,6 +130,19 @@ export class RepairCaseStore {
       this.insertActivity(id, "created", params.authorizationActor, { status: params.status ?? "ready" }, now);
     })();
     return this.get(id)!;
+  }
+
+  createOrGetByThread(params: CreateRepairCase): { repairCase: RepairCase; created: boolean } {
+    const existing = this.list({ guildId: params.guildId, threadId: params.threadId, limit: 1 })[0];
+    if (existing) return { repairCase: existing, created: false };
+    try {
+      return { repairCase: this.create(params), created: true };
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("duplicate repair thread")) throw error;
+      const concurrent = this.list({ guildId: params.guildId, threadId: params.threadId, limit: 1 })[0];
+      if (!concurrent) throw error;
+      return { repairCase: concurrent, created: false };
+    }
   }
 
   get(id: string): RepairCase | undefined {
@@ -202,6 +215,10 @@ export class RepairCaseStore {
     }));
   }
 
+  latestActivity(caseId: string): RepairCaseActivity | undefined {
+    return this.listActivity(caseId).at(-1);
+  }
+
   setAuthorizationActor(id: string, userId: string): RepairCase | undefined {
     const now = this.timestamp();
     const result = this.db.prepare("UPDATE repair_cases SET authorization_actor = ?, updated_at = ? WHERE id = ?")
@@ -215,7 +232,8 @@ export class RepairCaseStore {
       if (!current || !TERMINAL.includes(current.status)) return undefined;
       const now = this.timestamp();
       const result = this.db.prepare(`UPDATE repair_cases SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL,
-        resolved_at = NULL, cancelled_at = NULL, updated_at = ? WHERE id = ? AND status = ?`).run(now, id, current.status);
+        resolved_at = NULL, cancelled_at = NULL, attempts = 0, expires_at = ?, updated_at = ? WHERE id = ? AND status = ?`)
+        .run(new Date(Date.parse(now) + 7 * 86_400_000).toISOString(), now, id, current.status);
       if (result.changes !== 1) return undefined;
       this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(id);
       this.insertActivity(id, "status_changed", actor, { from: current.status, to: "ready", reason: "new_thread_message" }, now);
@@ -271,11 +289,33 @@ export class RepairCaseStore {
         this.db.prepare("INSERT INTO repair_case_wakes (case_id, type, due_at, created_at) VALUES (?, 'timer', ?, ?)")
           .run(caseId, timestamp(wake.dueAt), now);
       } else {
+        const fallbackAt = timestamp(wake.fallbackAt ?? new Date(Date.parse(now) + 6 * 60 * 60_000));
         this.db.prepare(`INSERT INTO repair_case_wakes (case_id, type, provider, event_type, media_id, created_at)
           VALUES (?, 'arr_event', ?, ?, ?, ?)`).run(caseId, wake.provider, wake.eventType ?? null, wake.mediaId ?? null, now);
+        this.db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE case_id = ?").run(fallbackAt, caseId);
       }
       this.transition(caseId, "waiting", { actor: "system", details: { wake: wake.type } });
-      return this.getWake(caseId)!;
+      if (wake.type === "arr_event") {
+        const recentEvents = this.db.prepare(`SELECT event_type, media_id, media_ids_json FROM repair_inbound_events
+          WHERE provider = ? AND received_at >= ? AND (? IS NULL OR event_type = ?)
+          ORDER BY received_at DESC LIMIT 50`).all(
+          wake.provider,
+          new Date(Date.parse(now) - 5 * 60_000).toISOString(),
+          wake.eventType ?? null,
+          wake.eventType ?? null,
+        ) as Array<{ event_type: string; media_id: string | null; media_ids_json: string | null }>;
+        const recent = recentEvents.find((event) => {
+          if (!wake.mediaId) return true;
+          const ids = parseJson(event.media_ids_json);
+          return Array.isArray(ids) ? ids.includes(wake.mediaId) : event.media_id === wake.mediaId;
+        });
+        if (recent) {
+          this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(caseId);
+          const replayIds = parseJson(recent.media_ids_json);
+          this.transition(caseId, "ready", { from: ["waiting"], actor: "event-replay", details: { reason: "recent_event", provider: wake.provider, eventType: recent.event_type, mediaIds: Array.isArray(replayIds) ? replayIds : recent.media_id ? [recent.media_id] : [] } });
+        }
+      }
+      return this.getWake(caseId) ?? { ...wake, caseId, createdAt: now };
     })();
   }
 
@@ -285,7 +325,7 @@ export class RepairCaseStore {
   }
 
   nextTimerDueAt(): string | undefined {
-    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE type = 'timer'").get() as { due_at: string | null }).due_at ?? undefined;
+    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE due_at IS NOT NULL").get() as { due_at: string | null }).due_at ?? undefined;
   }
 
   nextDeliveryDueAt(): string | undefined {
@@ -295,13 +335,13 @@ export class RepairCaseStore {
   claimDueTimers(limit = 100, now: Date | string = this.now()): RepairCase[] {
     return this.db.transaction(() => {
       const at = timestamp(now);
-      const rows = this.db.prepare(`SELECT w.case_id FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
-        WHERE w.type = 'timer' AND w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
-        .all(at, Math.max(1, limit)) as Array<{ case_id: string }>;
+      const rows = this.db.prepare(`SELECT w.case_id, w.type FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
+        WHERE w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
+        .all(at, Math.max(1, limit)) as Array<{ case_id: string; type: RepairCaseWake["type"] }>;
       const cases: RepairCase[] = [];
       for (const row of rows) {
-        this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ? AND type = 'timer'").run(row.case_id);
-        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer" });
+        this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(row.case_id);
+        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer", details: { reason: row.type === "arr_event" ? "webhook_fallback" : "timer" } });
         if (resumed) cases.push(resumed);
       }
       return cases;
@@ -327,11 +367,13 @@ export class RepairCaseStore {
   receiveEvent(event: InboundArrEvent): ReceiveEventResult {
     return this.db.transaction(() => {
       const receivedAt = event.receivedAt ? timestamp(event.receivedAt) : this.timestamp();
+      this.db.prepare("DELETE FROM repair_inbound_events WHERE received_at < ?")
+        .run(new Date(Date.parse(receivedAt) - 24 * 60 * 60_000).toISOString());
       const mediaIds = [...new Set([...(event.mediaIds ?? []), ...(event.mediaId ? [event.mediaId] : [])])];
       const inserted = this.db.prepare(`INSERT INTO repair_inbound_events
-        (provider, event_id, event_type, media_id, payload_json, received_at) VALUES (?, ?, ?, ?, ?, ?)
+        (provider, event_id, event_type, media_id, media_ids_json, payload_json, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(provider, event_id) DO NOTHING`).run(
-        event.provider, event.eventId, event.eventType, mediaIds[0] ?? null, json(event.payload), receivedAt,
+        event.provider, event.eventId, event.eventType, mediaIds[0] ?? null, json(mediaIds), json(event.payload), receivedAt,
       );
       if (inserted.changes === 0) return { duplicate: true, matchedCaseIds: [] };
       const mediaClause = mediaIds.length > 0
@@ -345,7 +387,7 @@ export class RepairCaseStore {
       const matchedCaseIds: string[] = [];
       for (const row of rows) {
         this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ? AND type = 'arr_event'").run(row.case_id);
-        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: `${event.provider}:${event.eventId}`, details: { eventType: event.eventType, mediaIds } });
+        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: `${event.provider}:${event.eventId}`, details: { provider: event.provider, eventType: event.eventType, mediaIds } });
         if (resumed) matchedCaseIds.push(row.case_id);
       }
       return { duplicate: false, matchedCaseIds };
@@ -478,7 +520,7 @@ function messageFromRow(row: MessageRow): RepairCaseMessage {
 function wakeFromRow(row: WakeRow): RepairCaseWake {
   return row.type === "timer"
     ? { id: row.id, caseId: row.case_id, type: "timer", dueAt: row.due_at!, createdAt: row.created_at }
-    : { id: row.id, caseId: row.case_id, type: "arr_event", provider: row.provider!, eventType: row.event_type ?? undefined, mediaId: row.media_id ?? undefined, createdAt: row.created_at };
+    : { id: row.id, caseId: row.case_id, type: "arr_event", provider: row.provider!, eventType: row.event_type ?? undefined, mediaId: row.media_id ?? undefined, fallbackAt: row.due_at ?? undefined, createdAt: row.created_at };
 }
 function outboxFromRow(row: OutboxRow): RepairCaseOutboxItem {
   return { id: row.id, caseId: row.case_id, kind: row.kind, payload: parseJson(row.payload_json), dedupeKey: row.dedupe_key ?? undefined,

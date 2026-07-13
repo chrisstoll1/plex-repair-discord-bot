@@ -36,6 +36,17 @@ test("cases, complete messages, activity, defaults, and outbox persist across re
   db.close();
 });
 
+test("a Discord thread can own only one repair case", (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const first = store.createOrGetByThread(caseParams("thread-owner"));
+  const second = store.createOrGetByThread({ ...caseParams("other-request"), threadId: first.repairCase.threadId });
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.repairCase.id, first.repairCase.id);
+  assert.throws(() => store.create({ ...caseParams("forced-duplicate"), threadId: first.repairCase.threadId }), /duplicate repair thread/);
+});
+
 test("timer wakes are explicit, due timers are claimed once, and event wakes take precedence", (t) => {
   let now = new Date("2026-07-10T12:00:00.000Z");
   const { db } = openFixture(t);
@@ -87,6 +98,65 @@ test("inbound events match provider, event type, and media and are deduplicated"
   });
   assert.deepEqual(hierarchical.matchedCaseIds, [series.id]);
   assert.equal(store.get(series.id)?.status, "ready");
+
+  store.receiveEvent({ provider: "sonarr", eventId: "early-event", eventType: "download", mediaIds: ["episode:late", "series:late"] });
+  const late = store.create(caseParams("late-wake"));
+  store.setWake(late.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "series:late" });
+  assert.equal(store.get(late.id)?.status, "ready");
+  assert.equal((store.latestActivity(late.id)?.details as { reason?: string }).reason, "recent_event");
+});
+
+test("event waits receive a bounded fallback and webhook context reaches the next run", async (t) => {
+  let now = new Date("2026-07-10T12:00:00.000Z");
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("webhook-resume"));
+  store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
+  assert.equal(store.getWake(repairCase.id)?.type, "arr_event");
+  assert.equal(store.nextTimerDueAt(), "2026-07-10T18:00:00.000Z");
+
+  let observedResume: unknown;
+  const service = new RepairCaseService(store, {
+    runner: async (_current, context) => {
+      observedResume = context.resume;
+      return { status: "resolved" };
+    },
+  });
+  service.start();
+  service.receiveEvent({ provider: "sonarr", eventId: "download-42", eventType: "download", mediaIds: ["episode:42"] });
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.deepEqual(observedResume, { source: "webhook", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] });
+  await service.shutdown();
+
+  const fallback = store.create(caseParams("webhook-fallback"));
+  store.setWake(fallback.id, { type: "arr_event", provider: "sonarr", mediaId: "episode:99" });
+  now = new Date("2026-07-10T18:00:00.001Z");
+  assert.deepEqual(store.claimDueTimers().map((item) => item.id), [fallback.id]);
+  assert.equal((store.latestActivity(fallback.id)?.details as { reason?: string }).reason, "webhook_fallback");
+});
+
+test("an event received during work reruns immediately without sending a stale waiting update", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  store.receiveEvent({ provider: "sonarr", eventId: "already-imported", eventType: "download", mediaId: "episode:42" });
+  const repairCase = store.create(caseParams("event-during-work"));
+  let runs = 0;
+  const delivered: unknown[] = [];
+  const service = new RepairCaseService(store, {
+    runner: async () => {
+      runs += 1;
+      return runs === 1
+        ? { wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" }, activity: { kind: "waiting", details: "stale" }, deliveries: [{ kind: "discord_message", payload: "stale" }] }
+        : { status: "resolved" };
+    },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.equal(runs, 2);
+  assert.deepEqual(delivered, []);
+  assert.equal(store.listActivity(repairCase.id).some((entry) => entry.details === "stale"), false);
+  await service.shutdown();
 });
 
 test("service runs cases fairly within concurrency, and waiting cases consume no slot", async (t) => {

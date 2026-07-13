@@ -190,6 +190,30 @@ export async function createWebServer(
     return { activity: repairCases.listActivity(params.id).map(publicRepairActivity) };
   });
 
+  app.get("/api/repairs/:id/timeline", async (request, reply) => {
+    const params = parseOrReply(repairParamsSchema, request.params, reply);
+    if (!params) return;
+    if (!repairCases?.get(params.id)) return sendError(reply, 404, "repair_not_found", "Repair was not found.");
+    const activity = repairCases.listActivity(params.id).map((entry) => ({ ...publicRepairActivity(entry), id: `activity:${entry.id}`, source: activitySource(entry.kind) }));
+    const botActivityCounts = activity.filter((entry) => entry.source === "bot" && entry.message).reduce((counts, entry) => counts.set(entry.message!, (counts.get(entry.message!) ?? 0) + 1), new Map<string, number>());
+    const messages = repairCases.listMessages(params.id).filter((message) => {
+      if (message.role !== "assistant") return true;
+      const remaining = botActivityCounts.get(message.content) ?? 0;
+      if (remaining === 0) return true;
+      botActivityCounts.set(message.content, remaining - 1);
+      return false;
+    }).map((message) => ({
+      id: `message:${message.id}`,
+      repairId: message.caseId,
+      type: `${message.role}_message`,
+      source: message.role === "user" ? "user" : message.role === "assistant" ? "bot" : "system",
+      message: message.content,
+      actor: message.metadata && typeof message.metadata === "object" && "userId" in message.metadata ? String(message.metadata.userId) : undefined,
+      createdAt: message.createdAt,
+    }));
+    return { timeline: [...activity, ...messages].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)) };
+  });
+
   app.post("/api/repairs/:id/cancel", async (request, reply) => {
     const params = parseOrReply(repairParamsSchema, request.params, reply);
     if (!params) return;
@@ -267,7 +291,7 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
     status: repairCase.status,
     title: repairCase.title,
     latestUpdate: latestText,
-    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : undefined,
+    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : wake?.fallbackAt ? String(wake.fallbackAt) : undefined,
     threadUrl: repairCase.guildId ? `https://discord.com/channels/${repairCase.guildId}/${repairCase.threadId}` : undefined,
     createdAt: repairCase.createdAt,
     updatedAt: repairCase.updatedAt,
@@ -278,7 +302,12 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
 
 function publicRepairActivity(activity: RepairCaseActivity) {
   const details = activity.details && typeof activity.details === "object" ? activity.details as { message?: string; userUpdate?: string; to?: RepairCase["status"] } : {};
-  return { id: String(activity.id), repairId: activity.caseId, type: activity.kind, message: typeof activity.details === "string" ? activity.details : details.userUpdate ?? details.message, status: details.to, details: activity.details, createdAt: activity.createdAt };
+  return { id: String(activity.id), repairId: activity.caseId, type: activity.kind, actor: activity.actor, message: typeof activity.details === "string" ? activity.details : details.userUpdate ?? details.message, status: details.to, details: activity.details, createdAt: activity.createdAt };
+}
+
+function activitySource(kind: string): "bot" | "agent" | "system" {
+  if (["progress", "waiting", "resolved", "needs_input", "blocked", "user_update"].includes(kind)) return "bot";
+  return kind === "attempt_started" || kind === "rerun_requested" ? "agent" : "system";
 }
 
 function ensureWebhookSecret(store: SettingsStore): string {
@@ -324,7 +353,7 @@ function sonarrMediaIds(payload: Record<string, unknown>): string[] {
   }
   const seriesId = objectId(payload.series);
   if (seriesId !== undefined) mediaIds.push(`series:${seriesId}`);
-  return [...new Set(mediaIds)];
+  return [...new Set(mediaIds)].sort();
 }
 
 function radarrMediaIds(payload: Record<string, unknown>): string[] {

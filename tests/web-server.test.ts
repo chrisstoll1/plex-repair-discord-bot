@@ -102,6 +102,9 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal((await app.inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
   const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
+  repairs.addMessage(repair.id, { role: "user", content: "The episode is missing", sourceMessageId: "discord-user", metadata: { userId: "user" } });
+  repairs.addActivity(repair.id, "progress", "I am checking it", "agent");
+  repairs.addMessage(repair.id, { role: "assistant", content: "I am checking it", sourceMessageId: "discord-bot" });
   repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   const webhookConfig = await app.inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
   assert.equal(webhookConfig.statusCode, 200);
@@ -113,6 +116,10 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(repairs.get(repair.id)?.status, "ready");
   const repairList = await app.inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
+  const timeline = (await app.inject({ method: "GET", url: `/api/repairs/${repair.id}/timeline` })).json().timeline;
+  assert.equal(timeline.some((entry: { type: string; source: string; actor?: string }) => entry.type === "user_message" && entry.source === "user" && entry.actor === "user"), true);
+  assert.equal(timeline.filter((entry: { message?: string }) => entry.message === "I am checking it").length, 1);
+  assert.equal(timeline.some((entry: { source: string; actor?: string }) => entry.source === "bot" && entry.actor === "agent"), true);
   const clearedRepairs = await app.inject({ method: "DELETE", url: "/api/repairs" });
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);

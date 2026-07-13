@@ -8,6 +8,8 @@ const WRITE_TOOLS = new Set([
   "trigger_sonarr_series_search",
   "trigger_sonarr_season_search",
   "trigger_sonarr_episode_search",
+  "refresh_sonarr_series",
+  "rescan_sonarr_series",
   "grab_radarr_release",
   "grab_sonarr_release",
   "remove_radarr_queue_item",

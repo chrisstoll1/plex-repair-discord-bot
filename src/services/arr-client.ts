@@ -71,6 +71,34 @@ export type ManualImportQueryParams = {
   filterExistingFiles?: boolean;
 };
 
+export type ManualImportMode = "auto" | "copy" | "move";
+export type ManualImportOverride = {
+  importId: number;
+  itemId?: number;
+  episodeIds?: number[];
+  releaseGroup?: string;
+  quality?: unknown;
+  languages?: unknown[];
+  indexerFlags?: number;
+  releaseType?: unknown;
+};
+type ManualImportCandidate = {
+  id: number;
+  path: string;
+  folderName?: string;
+  series?: { id?: number };
+  movie?: { id?: number };
+  episodes?: Array<{ id?: number }>;
+  episodeFileId?: number;
+  movieFileId?: number;
+  releaseGroup?: string;
+  quality?: unknown;
+  languages?: unknown[];
+  downloadId?: string;
+  indexerFlags?: number;
+  releaseType?: unknown;
+};
+
 export class ArrClient {
   constructor(
     private readonly name: "sonarr" | "radarr",
@@ -175,20 +203,60 @@ export class ArrClient {
     return this.request<unknown>(buildQueryPath("/api/v3/manualimport", this.manualImportQueryParams(params)));
   }
 
-  async executeManualImport(params: ManualImportQueryParams, importIds: number[]): Promise<unknown> {
+  async executeManualImport(
+    params: ManualImportQueryParams,
+    importIds: number[],
+    options: { importMode?: ManualImportMode; overrides?: ManualImportOverride[] } = {},
+  ): Promise<unknown> {
+    if (importIds.length === 0 || importIds.some((id) => !Number.isInteger(id) || id <= 0)) throw new Error("Manual import IDs must be positive integers");
+    if (new Set(importIds).size !== importIds.length) throw new Error("Manual import IDs must be unique");
+    const overrideIds = (options.overrides ?? []).map((item) => item.importId);
+    if (overrideIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(overrideIds).size !== overrideIds.length) {
+      throw new Error("Manual import override IDs must be unique positive integers");
+    }
+    const unknownOverrideIds = overrideIds.filter((id) => !importIds.includes(id));
+    if (unknownOverrideIds.length) throw new Error(`Manual import overrides do not match selected IDs: ${unknownOverrideIds.join(", ")}`);
     const preview = await this.getManualImport(params);
     if (!Array.isArray(preview)) {
       throw new Error("Manual import preview response was not an array");
     }
 
-    const selected = preview.filter((item) => isRecord(item) && typeof item.id === "number" && importIds.includes(item.id));
+    const selected = preview.filter(isManualImportCandidate).filter((item) => importIds.includes(item.id));
     if (selected.length !== importIds.length) {
       const foundIds = new Set(selected.map((item) => item.id));
       const missing = importIds.filter((id) => !foundIds.has(id));
       throw new Error(`Manual import preview did not include import IDs: ${missing.join(", ")}`);
     }
 
-    return this.request<unknown>("/api/v3/manualimport", { method: "POST", body: selected });
+    const overrides = new Map((options.overrides ?? []).map((item) => [item.importId, item]));
+    const files = selected.map((candidate) => {
+      const override = overrides.get(candidate.id);
+      const itemId = override?.itemId ?? (this.name === "sonarr" ? candidate.series?.id : candidate.movie?.id);
+      if (!itemId) throw new Error(`Manual import candidate ${candidate.id} has no ${this.name === "sonarr" ? "series" : "movie"} mapping`);
+      const common = {
+        path: candidate.path,
+        folderName: candidate.folderName,
+        releaseGroup: override?.releaseGroup ?? candidate.releaseGroup,
+        quality: override?.quality ?? candidate.quality,
+        languages: override?.languages ?? candidate.languages,
+        indexerFlags: override?.indexerFlags ?? candidate.indexerFlags,
+        releaseType: override?.releaseType ?? candidate.releaseType,
+        downloadId: candidate.downloadId ?? params.downloadId,
+      };
+      if (this.name === "radarr") return { ...common, movieId: itemId, movieFileId: candidate.movieFileId };
+      const episodeIds = override?.episodeIds ?? candidate.episodes?.map((episode) => episode.id).filter((id): id is number => typeof id === "number");
+      if (!episodeIds?.length) throw new Error(`Manual import candidate ${candidate.id} has no episode mapping`);
+      return { ...common, seriesId: itemId, episodeIds, episodeFileId: candidate.episodeFileId };
+    });
+
+    return this.request<unknown>("/api/v3/command", {
+      method: "POST",
+      body: { name: "ManualImport", files, importMode: options.importMode ?? "auto" },
+    });
+  }
+
+  async getCommand(commandId: number): Promise<unknown> {
+    return this.request<unknown>(`/api/v3/command/${commandId}`);
   }
 
   async getEpisodeFile(episodeFileId: number): Promise<unknown> {
@@ -256,6 +324,16 @@ export class ArrClient {
       method: "POST",
       body: { name: "EpisodeSearch", episodeIds },
     });
+  }
+
+  async refreshSeries(seriesId: number): Promise<unknown> {
+    this.assertService("sonarr");
+    return this.request<unknown>("/api/v3/command", { method: "POST", body: { name: "RefreshSeries", seriesId } });
+  }
+
+  async rescanSeries(seriesId: number): Promise<unknown> {
+    this.assertService("sonarr");
+    return this.request<unknown>("/api/v3/command", { method: "POST", body: { name: "RescanSeries", seriesId } });
   }
 
   async grabRelease(params: ReleaseGrabParams): Promise<unknown> {
@@ -377,4 +455,8 @@ export class ArrClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isManualImportCandidate(value: unknown): value is ManualImportCandidate {
+  return isRecord(value) && typeof value.id === "number" && typeof value.path === "string";
 }

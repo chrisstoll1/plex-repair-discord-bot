@@ -67,11 +67,18 @@ const repairCaseService = new RepairCaseService(repairCases, {
         conversationKey: `repair:${repairCase.id}`,
         sourceMessageId: repairCase.source,
         onProgress: async (update) => {
-          if (update.type === "tasks_started" && update.message?.trim()) await runContext.progress(update.message.trim());
+          if (update.type !== "tasks_started") return;
+          if (runContext.resume?.source === "webhook") {
+            const provider = runContext.resume.provider === "radarr" ? "Radarr" : "Sonarr";
+            await runContext.progress(`${provider} reported new activity for this repair. I’m verifying the result now.`);
+          } else if (update.message?.trim()) {
+            await runContext.progress(update.message.trim());
+          }
         },
       },
       webhookProviders,
       signal: runContext.signal,
+      resume: runContext.resume,
     });
     const control = result.control;
     if (!control) {

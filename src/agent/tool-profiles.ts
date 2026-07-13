@@ -19,6 +19,7 @@ const SONARR_READ_TOOLS = [
   "get_sonarr_episode_file",
   "preview_sonarr_rename",
   "get_sonarr_episode_releases",
+  "get_sonarr_command",
 ] as const;
 
 const RADARR_READ_TOOLS = [
@@ -34,14 +35,17 @@ const RADARR_READ_TOOLS = [
   "preview_radarr_rename",
   "get_radarr_movie_files",
   "get_radarr_movie_file",
+  "get_radarr_command",
 ] as const;
 
-const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_plex_metadata_children", "get_service_health"] as const;
+const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "search_plex_library_section", "get_plex_metadata_children", "get_service_health"] as const;
 
 const SONARR_WRITE_TOOLS = [
   "trigger_sonarr_series_search",
   "trigger_sonarr_season_search",
   "trigger_sonarr_episode_search",
+  "refresh_sonarr_series",
+  "rescan_sonarr_series",
   "grab_sonarr_release",
   "remove_sonarr_queue_item",
   "execute_sonarr_manual_import",

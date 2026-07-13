@@ -13,12 +13,12 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 - Diagnose missing or incorrect movies, series, seasons, episodes, specials, and anime releases.
 - Compare Plex availability with Sonarr or Radarr state, queues, history, files, and releases.
 - Search for and grab releases, import and rename files, update monitoring and media settings, and refresh Plex libraries.
-- Preview manual imports and renames before applying them.
+- Preview and execute Sonarr or Radarr manual imports with explicit media mappings and import modes, and preview renames before applying them.
 - Restrict requests by Discord guild or channel and repairs by Discord role.
 - Retain complete context with each repair thread.
 - Create a dedicated public Discord thread for each issue, keep participants informed, and continue repairs after downloads or other external work finishes.
 - Persist ongoing repairs across restarts and manage working, waiting, blocked, and completed cases from Ongoing Repairs.
-- Resume waiting repairs from Sonarr or Radarr webhooks without spending model tokens on periodic checks.
+- Resume waiting repairs from Sonarr or Radarr webhooks, with event replay and bounded fallback checks when a webhook is missed.
 - Track queued and completed service workers from the Agent Tasks page.
 - Configure connections, model behavior, timeouts, and repair policy from the web portal.
 
@@ -108,7 +108,7 @@ In a server, mention the bot with a request:
 @Plex Repairman why is Dune missing?
 ```
 
-The bot creates a public thread from the request. Messages from any participant in that active thread are included without another mention. Each participant's current Discord roles are checked for repairs requested on their behalf. Separate issue threads can work concurrently.
+The bot creates a public thread from the request. Messages from any participant in that active thread are included without another mention, and each Discord thread is constrained to one durable repair case. Each participant's current Discord roles are checked for repairs requested on their behalf. Separate issue threads can work concurrently.
 
 When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks are preferred over timed checks. Disabling a webhook integration converts affected waits to a delayed check.
 

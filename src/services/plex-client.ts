@@ -40,6 +40,10 @@ export class PlexClient {
     return this.requestText("/library/sections");
   }
 
+  async searchLibrarySection(sectionId: number, title: string): Promise<string> {
+    return this.requestText(buildQueryPath(`/library/sections/${sectionId}/all`, { title }));
+  }
+
   async getMetadataChildren(ratingKey: string): Promise<string> {
     return this.requestText(`/library/metadata/${encodeURIComponent(ratingKey)}/children`);
   }
