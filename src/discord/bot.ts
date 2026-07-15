@@ -203,13 +203,23 @@ export class DiscordBotService {
   }
 
   async startRepairCaseActivity(repairCase: RepairCase): Promise<void> {
-    if (!this.client || this.repairIndicators.has(repairCase.id)) return;
+    if (!this.client) return;
     const channel = await this.client.channels.fetch(repairCase.threadId);
     if (!channel?.isTextBased()) return;
+    const existing = this.repairIndicators.get(repairCase.id);
+    if (existing) {
+      existing.resume(channel);
+      return;
+    }
     let sourceMessage: Message | undefined;
-    if (channel.isThread()) {
+    const latestUserMessageId = [...(this.repairCases?.listMessages(repairCase.id) ?? [])]
+      .reverse().find((message) => message.role === "user" && message.sourceMessageId)?.sourceMessageId;
+    if (latestUserMessageId && "messages" in channel) {
+      sourceMessage = await channel.messages.fetch(latestUserMessageId).catch(() => undefined);
+    }
+    if (!sourceMessage && channel.isThread()) {
       sourceMessage = await channel.fetchStarterMessage() ?? undefined;
-    } else if ("messages" in channel) {
+    } else if (!sourceMessage && "messages" in channel) {
       sourceMessage = await channel.messages.fetch(repairCase.source).catch(() => undefined);
     }
     if (!sourceMessage) return;
@@ -300,8 +310,6 @@ export class DiscordBotService {
       }
       const targetChannel = message.guildId ? await message.client.channels.fetch(threadId) : message.channel;
       await this.startRepairIndicators(repairCase.id, message, targetChannel?.isTextBased() ? targetChannel : message.channel);
-      this.repairCases.enqueueDelivery(repairCase.id, "discord_message", { content: "I’ve started looking into this. I’ll update this thread as I find something useful." }, { dedupeKey: `${repairCase.id}:acknowledged` });
-      this.repairCaseService.refreshScheduling();
       this.repairCaseService.notifyNewMessage(repairCase.id, {
         content,
         sourceMessageId: message.id,
@@ -324,11 +332,19 @@ export class DiscordBotService {
     await previous?.reactions.clear();
     const reactions = new MessageReactionTracker(message, readRuntimeSettings(this.store).discord.reactionsEnabled, this.logger);
     await reactions.reset("👀");
-    const typing = startTypingRefreshForChannel(typingChannel, this.logger, message.id);
+    let typing = startTypingRefreshForChannel(typingChannel, this.logger, message.id);
+    let typingActive = true;
     this.repairIndicators.set(caseId, {
       reactions,
       stop: () => {
+        if (!typingActive) return;
         typing.stop();
+        typingActive = false;
+      },
+      resume: (channel) => {
+        if (typingActive) return;
+        typing = startTypingRefreshForChannel(channel, this.logger, message.id);
+        typingActive = true;
       },
     });
   }
@@ -370,7 +386,6 @@ export class DiscordBotService {
     const indicators = this.repairIndicators.get(repairCase.id);
     if (!indicators) return;
     indicators.stop();
-    this.repairIndicators.delete(repairCase.id);
     const emoji = repairCase.status === "resolved"
       ? "✅"
       : repairCase.status === "waiting"
@@ -381,6 +396,10 @@ export class DiscordBotService {
           ? "⛔"
           : "⚠️";
     await indicators.reactions.set(emoji);
+    if (["resolved", "exhausted", "cancelled"].includes(repairCase.status)
+      && this.repairIndicators.get(repairCase.id) === indicators) {
+      this.repairIndicators.delete(repairCase.id);
+    }
   }
 
   private async registerHealthCommand(token: string, applicationId?: string): Promise<void> {
@@ -400,6 +419,7 @@ export class DiscordBotService {
 type RepairIndicators = {
   reactions: MessageReactionTracker;
   stop: () => void;
+  resume: (channel: Message["channel"]) => void;
 };
 
 export class KeyedSerialQueue {
