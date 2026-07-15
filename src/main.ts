@@ -10,6 +10,7 @@ import { openDatabase } from "./storage/db.js";
 import { ConversationStore } from "./storage/conversation.js";
 import { ToolAgentTaskStore } from "./storage/tool-agent-tasks.js";
 import { RepairCaseStore } from "./storage/repair-cases.js";
+import { advancePlexVerification, plexVerificationBlockedMessage } from "./agent/plex-verification.js";
 import { SecretBox } from "./storage/secrets.js";
 import { SettingsStore } from "./storage/settings.js";
 import { createWebServer } from "./web/server.js";
@@ -101,12 +102,24 @@ const repairCaseService = new RepairCaseService(repairCases, {
       };
     }
     if (control.type === "wait") {
+      const plexVerification = control.waitReason === "plex_indexing"
+        ? advancePlexVerification(repairCase.checkpoint, runContext.resume, control.missingMedia ?? [])
+        : undefined;
+      if (plexVerification?.exhausted) {
+        const content = plexVerificationBlockedMessage(plexVerification.state);
+        return {
+          status: "blocked",
+          checkpoint: { summary: control.checkpoint, plexVerification: plexVerification.state },
+          activity: { kind: "blocked", details: { userUpdate: content, reason: "plex_verification_exhausted", missingMedia: plexVerification.state.missingMedia } },
+          deliveries: [{ kind: "discord_message", payload: { content }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:plex-blocked` }],
+        };
+      }
       const wake = control.provider
         ? { type: "arr_event" as const, provider: control.provider, eventType: control.eventType, mediaIds: control.mediaIds ?? (control.mediaId ? [control.mediaId] : []), completionPolicy: control.completionPolicy }
         : { type: "timer" as const, dueAt: normalizeResumeAt(control.resumeAt) };
       return {
         wake,
-        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt },
+        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt, ...(plexVerification ? { plexVerification: plexVerification.state } : {}) },
         activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake } },
         deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:wait` }],
       };

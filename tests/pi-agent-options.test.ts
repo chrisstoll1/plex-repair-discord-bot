@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyOpenAiCodexServiceTier, resolveConfiguredModel } from "../src/agent/pi-agent.js";
+import { applyOpenAiCodexServiceTier, repairProgressLimit, resolveConfiguredModel } from "../src/agent/pi-agent.js";
 
 test("priority service tier is added only to OpenAI Codex payloads", () => {
   const payload = { model: "gpt-5.6-sol", stream: true };
@@ -25,4 +25,10 @@ test("explicitly configured models cannot silently fall back", () => {
     () => resolveConfiguredModel(registry as never, "openai-codex", "missing"),
     /Configured AI model is unavailable: openai-codex\/missing/,
   );
+});
+
+test("resumed repairs emit only one task progress update", () => {
+  assert.equal(repairProgressLimit(), 3);
+  assert.equal(repairProgressLimit({ source: "webhook" }), 1);
+  assert.equal(repairProgressLimit({ source: "timer" }), 1);
 });

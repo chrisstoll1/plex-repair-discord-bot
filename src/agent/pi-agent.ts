@@ -19,6 +19,7 @@ import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
+import { readPlexVerification, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -39,7 +40,7 @@ export type AgentRequestContext = {
 };
 
 export type RepairCaseControlResult =
-  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string }
+  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string; waitReason?: "external_progress" | "plex_indexing"; missingMedia?: string[] }
   | { type: "finish"; status: "resolved" | "needs_input" | "blocked"; userUpdate: string; checkpoint: string };
 
 export type RepairCaseControl = {
@@ -47,6 +48,7 @@ export type RepairCaseControl = {
   history: Array<{ role: string; content: string; userId?: string; createdAt: string }>;
   setResult: (result: RepairCaseControlResult) => void;
   resume?: { source: "webhook" | "timer"; provider?: string; eventType?: string; mediaIds?: string[] };
+  plexVerification?: PlexVerificationState;
 };
 
 export type RepairCaseAgentResult = { response: string; control?: RepairCaseControlResult };
@@ -269,6 +271,7 @@ export class PiAgentService {
           control = result;
         },
         resume: params.resume,
+        plexVerification: readPlexVerification(params.checkpoint),
       },
     };
     const settings = readRuntimeSettings(this.store);
@@ -464,10 +467,11 @@ export class PiAgentService {
     };
     const availableProfiles = this.availableToolProfiles(context);
     let progressCount = 0;
+    const progressLimit = repairProgressLimit(context.caseControl?.resume);
     const progressMessages = new Set<string>();
     const reportTasksStarted = async (titles: string[], message: string) => {
       const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
-      if (progressCount >= 3 || progressMessages.has(normalized) || !context.onProgress) return;
+      if (progressCount >= progressLimit || progressMessages.has(normalized) || !context.onProgress) return;
       progressCount += 1;
       progressMessages.add(normalized);
       try {
@@ -618,9 +622,24 @@ export class PiAgentService {
             if (!eventAvailable && !params.resumeAt) throw new Error("A timed resumeAt is required when no matching event integration is available");
             const result: RepairCaseControlResult = eventAvailable
               ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaIds, completionPolicy: params.completionPolicy ?? (mediaIds.length > 1 ? "all" : "any") }
-              : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt };
+              : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt, waitReason: "external_progress" };
             context.caseControl!.setResult(result);
             return toolResponse({ accepted: true, wake: eventAvailable ? "event" : "time" });
+          },
+        }),
+        defineTool({
+          name: "wait_for_plex_indexing",
+          label: "Wait for Plex indexing",
+          description: "After one accepted Plex refresh, suspend until a timed exact-media verification. Repeated use is bounded and cannot trigger another Plex refresh.",
+          parameters: Type.Object({
+            userUpdate: Type.String({ description: "Short plain-language update explaining that Plex indexing will be checked automatically", maxLength: 500 }),
+            checkpoint: Type.String({ description: "Compact internal summary including the accepted refresh, show or movie rating key, path, and next exact verification", maxLength: 6000 }),
+            missingMedia: Type.Array(Type.String(), { minItems: 1, description: "Exact episode or movie labels Plex still cannot see" }),
+            resumeAt: Type.String({ description: "ISO timestamp for the next Plex verification" }),
+          }),
+          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; missingMedia: string[]; resumeAt: string }) => {
+            context.caseControl!.setResult({ type: "wait", ...params, waitReason: "plex_indexing" });
+            return toolResponse({ accepted: true, wake: "time", boundedFollowUp: true });
           },
         }),
         defineTool({
@@ -645,7 +664,7 @@ export class PiAgentService {
   private availableToolProfiles(context: AgentRequestContext): ToolProfile[] {
     const settings = readRuntimeSettings(this.store);
     const allowRepair = canStartRepairWorker(settings, context);
-    return toolProfileNames().filter((profile) => allowRepair || !isRepairToolProfile(profile));
+    return toolProfileNames().filter((profile) => (allowRepair || !isRepairToolProfile(profile)) && !(profile === "plex_repair_agent" && context.caseControl?.plexVerification));
   }
 
   private assertToolProfileAllowed(profile: ToolProfile, context: AgentRequestContext): void {
@@ -1660,6 +1679,10 @@ function toolResponse(results: unknown) {
 
 function normalizeEventType(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+export function repairProgressLimit(resume?: { source: "webhook" | "timer" }): number {
+  return resume ? 1 : 3;
 }
 
 function normalizeRepairTitle(value: string): string {
