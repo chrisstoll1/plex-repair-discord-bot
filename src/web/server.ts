@@ -267,6 +267,10 @@ export async function createWebServer(
   });
 
   app.get("/api/pi-auth", async () => ({ piAuth: publicPiAuth(await piAuth.refreshExpiredCredential()) }));
+  app.get("/api/pi-models", async () => {
+    await piAuth.refreshExpiredCredential();
+    return { models: piAuth.listAvailableModels() };
+  });
   app.post("/api/pi-auth/start", async () => ({ piAuth: publicPiAuth(await piAuth.startLoginAndWaitForDeviceCode()) }));
   app.post("/api/pi-auth/cancel", async () => ({ piAuth: publicPiAuth(piAuth.cancelLogin()) }));
   app.post("/api/pi-auth/logout", async () => ({ piAuth: publicPiAuth(piAuth.logout()) }));

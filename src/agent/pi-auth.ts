@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AppConfig } from "../config.js";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -43,9 +43,18 @@ export type PiAuthSnapshot = {
   activeLogin?: Omit<ActiveLogin, "abort">;
 };
 
+export type PiModelSummary = {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  contextWindow: number;
+};
+
 export class PiAuthService {
   private readonly authPath: string;
   private readonly authStorage: AuthStorage;
+  private readonly modelRegistry: ModelRegistry;
   private activeLogin?: ActiveLogin;
   private refresh?: PiAuthSnapshot["refresh"];
 
@@ -53,6 +62,21 @@ export class PiAuthService {
     fs.mkdirSync(config.piAgentDir, { recursive: true });
     this.authPath = path.join(config.piAgentDir, "auth.json");
     this.authStorage = AuthStorage.create(this.authPath);
+    this.modelRegistry = ModelRegistry.create(this.authStorage, path.join(config.piAgentDir, "models.json"));
+  }
+
+  listAvailableModels(): PiModelSummary[] {
+    this.authStorage.reload();
+    return this.modelRegistry
+      .getAvailable()
+      .map((model) => ({
+        provider: model.provider,
+        id: model.id,
+        name: model.name,
+        reasoning: model.reasoning,
+        contextWindow: model.contextWindow,
+      }))
+      .sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
   }
 
   getSnapshot(): PiAuthSnapshot {

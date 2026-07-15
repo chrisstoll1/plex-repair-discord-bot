@@ -47,6 +47,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   };
   const piAuth = {
     refreshExpiredCredential: async () => piSnapshot,
+    listAvailableModels: () => [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
     startLoginAndWaitForDeviceCode: async () => piSnapshot,
     cancelLogin: () => piSnapshot,
     logout: () => piSnapshot,
@@ -104,6 +105,9 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
 
   assert.equal((await app.inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
+  assert.deepEqual((await app.inject({ method: "GET", url: "/api/pi-models" })).json(), {
+    models: [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
+  });
   const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
   repairs.addMessage(repair.id, { role: "user", content: "The episode is missing", sourceMessageId: "discord-user", metadata: { userId: "user" } });
   repairs.addActivity(repair.id, "progress", "I am checking it", "agent");
@@ -145,7 +149,7 @@ function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { actio
     sonarr: { url: overrides.sonarrUrl ?? "", apiKey: { action: "keep" } },
     radarr: { url: "", apiKey: { action: "keep" } },
     plex: { url: "", token: { action: "keep" } },
-    ai: { modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium", serviceTier: overrides.serviceTier ?? "default" },
+    ai: { modelProvider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "medium", serviceTier: overrides.serviceTier ?? "default" },
     timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
     repair: { requireConfirmation: true, allowDestructive: false },
   };

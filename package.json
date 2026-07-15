@@ -17,7 +17,7 @@
     "test:server": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.1",
+    "@earendil-works/pi-coding-agent": "0.80.7",
     "@fastify/static": "9.3.0",
     "better-sqlite3": "12.11.1",
     "discord.js": "14.26.4",

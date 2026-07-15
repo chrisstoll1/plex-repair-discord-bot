@@ -92,6 +92,17 @@ export function applyOpenAiCodexServiceTier(
   return { ...payload, service_tier: serviceTier };
 }
 
+export function resolveConfiguredModel(
+  modelRegistry: Pick<ModelRegistry, "find">,
+  provider: string,
+  modelId: string,
+): ReturnType<ModelRegistry["find"]> {
+  if (!modelId) return undefined;
+  const model = modelRegistry.find(provider, modelId);
+  if (!model) throw new Error(`Configured AI model is unavailable: ${provider}/${modelId}`);
+  return model;
+}
+
 type StartManyToolAgentsParams = {
   progressMessage: string;
   tasks: ToolAgentTaskParams[];
@@ -378,7 +389,7 @@ export class PiAgentService {
     const settings = readRuntimeSettings(this.store);
     const authStorage = AuthStorage.create(`${this.config.piAgentDir}/auth.json`);
     const modelRegistry = ModelRegistry.create(authStorage, `${this.config.piAgentDir}/models.json`);
-    const model = settings.ai.modelId ? modelRegistry.find(settings.ai.modelProvider, settings.ai.modelId) : undefined;
+    const model = resolveConfiguredModel(modelRegistry, settings.ai.modelProvider, settings.ai.modelId);
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },

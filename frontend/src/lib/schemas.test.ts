@@ -6,7 +6,7 @@ const settings = {
   sonarr: { url: "http://sonarr.local:8989", apiKey: { configured: true } },
   radarr: { url: "", apiKey: { configured: false } },
   plex: { url: "http://plex.local:32400", token: { configured: true } },
-  ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium", serviceTier: "default" },
+  ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "medium", serviceTier: "default" },
   timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
   repair: { requireConfirmation: true, allowDestructive: false },
 } as const;

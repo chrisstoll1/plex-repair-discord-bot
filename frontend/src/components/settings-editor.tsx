@@ -4,7 +4,7 @@ import { Eye, EyeOff, LoaderCircle, RotateCcw, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
 import { useBlocker } from "react-router-dom";
-import { api, type Settings } from "../lib/api";
+import { api, type AiModel, type Settings } from "../lib/api";
 import { settingsSchema } from "../lib/schemas";
 import { ErrorState, LoadingState } from "./states";
 import { useToast } from "./toast";
@@ -14,8 +14,9 @@ export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
+  const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "bot" });
   const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settingsQuery.data });
-  const { formState: { isDirty, errors, isSubmitting }, handleSubmit, register, control, reset, watch } = form;
+  const { formState: { isDirty, errors, isSubmitting }, handleSubmit, register, control, reset, setValue, watch } = form;
   const blocker = useBlocker(isDirty);
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
 
   const submit = handleSubmit((values) => mutation.mutateAsync(values));
   return <form onSubmit={submit} noValidate className="space-y-5">
-    {mode === "connections" ? <ConnectionsFields form={{ register, control, watch, errors }} /> : <BotFields form={{ register, control, errors }} />}
+    {mode === "connections" ? <ConnectionsFields form={{ register, control, setValue, watch, errors }} /> : <BotFields form={{ register, control, setValue, watch, errors }} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />}
     <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-xl border border-line bg-[#11171c]/95 p-3 shadow-2xl backdrop-blur sm:flex-row sm:items-center sm:justify-between">
       <p className="px-1 text-xs text-zinc-500">{isDirty ? <span className="text-amber-300">Unsaved configuration changes</span> : "All changes saved"}</p>
       <div className="flex gap-2"><Button type="button" variant="ghost" disabled={!isDirty || isSubmitting} onClick={() => reset(settingsQuery.data)}><RotateCcw className="h-4 w-4" />Reset</Button><Button type="submit" disabled={!isDirty || isSubmitting || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save changes</Button></div>
@@ -49,7 +50,7 @@ export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
   </form>;
 }
 
-type FormParts = Pick<ReturnType<typeof useForm<Settings>>, "register" | "control" | "watch"> & { errors: ReturnType<typeof useForm<Settings>>["formState"]["errors"] };
+type FormParts = Pick<ReturnType<typeof useForm<Settings>>, "register" | "control" | "setValue" | "watch"> & { errors: ReturnType<typeof useForm<Settings>>["formState"]["errors"] };
 
 function ConnectionsFields({ form }: { form: FormParts }) {
   const { register, control, watch, errors } = form;
@@ -61,13 +62,30 @@ function ConnectionsFields({ form }: { form: FormParts }) {
   </div>;
 }
 
-function BotFields({ form }: { form: Omit<FormParts, "watch"> }) {
+function BotFields({ form, models, modelsPending, modelsError }: { form: FormParts; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
   const { register, control, errors } = form;
   return <div className="grid gap-5 xl:grid-cols-2">
     <Section title="Discord access" description="Limit where commands are accepted and who can run repairs."><TextField label="Allowed guild IDs" path="discord.allowedGuildIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Allowed channel IDs" path="discord.allowedChannelIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Repair role IDs" path="discord.repairRoleIds" register={register} placeholder="Comma-separated" /><ToggleField label="Allow direct messages" description="Accept repair requests outside servers." path="discord.allowDirectMessages" control={control} /><ToggleField label="Message reactions" description="Use reactions to communicate task state." path="discord.reactionsEnabled" control={control} /></Section>
-    <Section title="AI model" description="Choose the model provider, response depth, and request priority."><TextField label="Model provider" path="ai.modelProvider" register={register} error={errors.ai?.modelProvider} /><TextField label="Model ID" path="ai.modelId" register={register} placeholder="Leave blank for provider default" /><div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div><div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">Priority requests faster processing from OpenAI Codex.</p></div></Section>
+    <AiModelFields form={form} models={models} pending={modelsPending} error={modelsError} />
     <Section title="Safety and timeouts" description="Set request limits and control which repairs may execute."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={register} error={errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={register} error={errors.timeouts?.releaseLookupSeconds} type="number" /><ToggleField label="Require confirmation" description="Blocks repair execution until action-specific confirmation is implemented." path="repair.requireConfirmation" control={control} /><ToggleField label="Allow destructive repairs" description="Permit queue removal, file deletion, and movie or series removal." path="repair.allowDestructive" control={control} /></Section>
   </div>;
+}
+
+function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
+  const provider = form.watch("ai.modelProvider");
+  const modelId = form.watch("ai.modelId");
+  const providers = [...new Set(models.map((model) => model.provider))].sort();
+  const providerModels = models.filter((model) => model.provider === provider);
+  const providerAvailable = providers.includes(provider);
+  const modelAvailable = providerModels.some((model) => model.id === modelId);
+  const providerField = form.register("ai.modelProvider");
+
+  return <Section title="AI model" description="Choose from models available through authenticated providers.">
+    <div><Label htmlFor="model-provider">Model provider</Label><select id="model-provider" {...providerField} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="">Select a provider</option>{provider && !providerAvailable && <option value={provider}>{provider} (Unavailable)</option>}{providers.map((value) => <option key={value} value={value}>{value}</option>)}</select>{form.errors.ai?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelProvider.message}</p>}</div>
+    <div><Label htmlFor="model-id">Model</Label><select id="model-id" {...form.register("ai.modelId")} aria-invalid={!!form.errors.ai?.modelId} disabled={!provider || pending} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60"><option value="">Select a model</option>{modelId && !modelAvailable && <option value={modelId}>{modelId} (Unavailable)</option>}{providerModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}</select>{form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}{pending && <p className="mt-1.5 text-xs text-zinc-500">Loading authenticated models...</p>}{error && <p className="mt-1.5 text-xs text-red-400">Could not load models: {error.message}</p>}{!pending && !error && models.length === 0 && <p className="mt-1.5 text-xs text-amber-300">Connect an AI provider before selecting a model.</p>}</div>
+    <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
+    <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">Priority requests faster processing from OpenAI Codex.</p></div>
+  </Section>;
 }
 
 function Section({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <Card><CardHeader><CardTitle>{title}</CardTitle><p className="mt-1 text-xs text-zinc-500">{description}</p></CardHeader><CardContent className="space-y-5">{children}</CardContent></Card>; }

@@ -110,6 +110,14 @@ export type PiAuthSnapshot = {
   };
 };
 
+export type AiModel = {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  contextWindow: number;
+};
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) {
     super(message);
@@ -148,6 +156,7 @@ export const api = {
   updateWebhookConfig: (config: Pick<WebhookConfig, "publicBaseUrl" | "sonarrEnabled" | "radarrEnabled">) => request<WebhookConfig>("/api/webhooks/config", { method: "PUT", body: JSON.stringify(config) }),
   rotateWebhookSecret: () => request<WebhookConfig>("/api/webhooks/rotate-secret", { method: "POST" }),
   getPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth").then((response) => response.piAuth),
+  getAiModels: () => request<{ models: AiModel[] }>("/api/pi-models").then((response) => response.models),
   startPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/start", { method: "POST" }).then((response) => response.piAuth),
   cancelPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/cancel", { method: "POST" }).then((response) => response.piAuth),
   logoutPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/logout", { method: "POST" }).then((response) => response.piAuth),
