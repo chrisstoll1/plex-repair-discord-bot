@@ -402,5 +402,5 @@ function resumeContext(activity: ReturnType<RepairCaseStore["latestActivity"]>):
   if (details.eventType) {
     return { source: "webhook", provider: details.provider ?? activity.actor?.split(":", 1)[0], eventType: details.eventType, mediaIds: details.mediaIds };
   }
-  return details.reason === "webhook_fallback" || details.reason === "timer" ? { source: "timer" } : undefined;
+  return details.reason === "timer" ? { source: "timer" } : undefined;
 }

@@ -162,14 +162,14 @@ test("service suppresses duplicate progress without adding idle messages", async
   await service.shutdown();
 });
 
-test("event waits receive a bounded fallback and webhook context reaches the next run", async (t) => {
+test("event waits have no timer, preserve webhook context, and convert when the provider is disabled", async (t) => {
   let now = new Date("2026-07-10T12:00:00.000Z");
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db, () => now);
   const repairCase = store.create(caseParams("webhook-resume"));
   store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   assert.equal(store.getWake(repairCase.id)?.type, "arr_event");
-  assert.equal(store.nextTimerDueAt(), "2026-07-10T12:15:00.000Z");
+  assert.equal(store.nextTimerDueAt(), undefined);
 
   let observedResume: unknown;
   const service = new RepairCaseService(store, {
@@ -184,11 +184,16 @@ test("event waits receive a bounded fallback and webhook context reaches the nex
   assert.deepEqual(observedResume, { source: "webhook", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] });
   await service.shutdown();
 
-  const fallback = store.create(caseParams("webhook-fallback"));
-  store.setWake(fallback.id, { type: "arr_event", provider: "sonarr", mediaId: "episode:99" });
-  now = new Date("2026-07-10T12:30:00.001Z");
-  assert.deepEqual(store.claimDueTimers().map((item) => item.id), [fallback.id]);
-  assert.equal((store.latestActivity(fallback.id)?.details as { reason?: string }).reason, "webhook_fallback");
+  const disabled = store.create(caseParams("provider-disabled"));
+  store.setWake(disabled.id, { type: "arr_event", provider: "sonarr", mediaId: "episode:99" });
+  const dueAt = new Date("2026-07-10T12:15:00.000Z");
+  assert.equal(store.replaceProviderWakesWithTimers("sonarr", dueAt), 1);
+  const converted = store.getWake(disabled.id);
+  assert.equal(converted?.type, "timer");
+  assert.equal(converted?.type === "timer" ? converted.dueAt : undefined, dueAt.toISOString());
+  now = new Date("2026-07-10T12:15:00.001Z");
+  assert.deepEqual(store.claimDueTimers().map((item) => item.id), [disabled.id]);
+  assert.equal((store.latestActivity(disabled.id)?.details as { reason?: string }).reason, "timer");
 });
 
 test("an event received during work reruns immediately without sending a stale waiting update", async (t) => {

@@ -37,9 +37,9 @@ User communication:
 
 Case lifecycle:
 - Before ending, call exactly one lifecycle tool: wait_for_external_progress, wait_for_plex_indexing, or finish_repair_case.
-- Use wait_for_external_progress only when work cannot usefully continue now. Prefer an available event wake; event waits also receive a bounded fallback check so they cannot remain stuck forever.
+- Use wait_for_external_progress only when work cannot usefully continue now. Prefer an available event wake, which resumes only when Sonarr or Radarr reports the expected change.
 - When several episodes or movies are expected to change, wait for all provider-qualified media IDs together instead of choosing one representative item.
-- Tell the user what external change is expected and roughly when the automatic fallback check will occur.
+- For an event wake, tell the user what external change is expected and do not mention a fallback or scheduled check. For a timer wake, state the actual scheduled check time accurately.
 - Use finish_repair_case with resolved only after verifying the original problem is fixed.
 - Use needs_input only when a specific user decision or action is required. Use blocked when no automatic path remains.
 - Include a compact checkpoint with findings, actions already taken, relevant media IDs, what remains, and the next verification step.

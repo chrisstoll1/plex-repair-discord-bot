@@ -225,8 +225,6 @@ function migrate(db: AppDatabase): void {
         AND (newer.updated_at > repair_cases.updated_at OR (newer.updated_at = repair_cases.updated_at AND newer.id > repair_cases.id))
     )`).run(now);
   db.exec("DELETE FROM repair_case_wakes WHERE case_id IN (SELECT id FROM repair_cases WHERE status = 'cancelled')");
-  db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE type = 'arr_event' AND due_at IS NULL")
-    .run(new Date(Date.now() + 6 * 60 * 60_000).toISOString());
 }
 
 function ensureColumn(db: AppDatabase, table: string, column: string, definition: string): void {

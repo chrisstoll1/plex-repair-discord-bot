@@ -241,9 +241,9 @@ export async function createWebServer(
     store.setString("webhooks.publicBaseUrl", config.publicBaseUrl);
     store.setString("webhooks.sonarr.enabled", String(config.sonarrEnabled));
     store.setString("webhooks.radarr.enabled", String(config.radarrEnabled));
-    const fallbackAt = new Date(Date.now() + 15 * 60_000);
-    if (sonarrWasEnabled && !config.sonarrEnabled) repairCases?.replaceProviderWakesWithTimers("sonarr", fallbackAt);
-    if (radarrWasEnabled && !config.radarrEnabled) repairCases?.replaceProviderWakesWithTimers("radarr", fallbackAt);
+    const dueAt = new Date(Date.now() + 15 * 60_000);
+    if (sonarrWasEnabled && !config.sonarrEnabled) repairCases?.replaceProviderWakesWithTimers("sonarr", dueAt);
+    if (radarrWasEnabled && !config.radarrEnabled) repairCases?.replaceProviderWakesWithTimers("radarr", dueAt);
     repairCaseService?.refreshScheduling();
     ensureWebhookSecret(store);
     return publicWebhookConfig(store);
@@ -296,7 +296,7 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
     status: repairCase.status,
     title: repairCase.title,
     latestUpdate: latestText,
-    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : wake?.fallbackAt ? String(wake.fallbackAt) : undefined,
+    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : undefined,
     threadUrl: repairCase.guildId ? `https://discord.com/channels/${repairCase.guildId}/${repairCase.threadId}` : undefined,
     createdAt: repairCase.createdAt,
     updatedAt: repairCase.updatedAt,

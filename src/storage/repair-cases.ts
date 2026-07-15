@@ -65,7 +65,7 @@ export type RepairCaseActivity = {
 
 export type RepairCaseWake =
   | { id?: number; caseId?: string; type: "timer"; dueAt: Date | string; createdAt?: string }
-  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; fallbackAt?: Date | string; createdAt?: string };
+  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; createdAt?: string };
 
 export type InboundArrEvent = {
   provider: string;
@@ -296,12 +296,10 @@ export class RepairCaseStore {
         this.db.prepare("INSERT INTO repair_case_wakes (case_id, type, due_at, created_at) VALUES (?, 'timer', ?, ?)")
           .run(caseId, timestamp(wake.dueAt), now);
       } else {
-        const fallbackAt = timestamp(wake.fallbackAt ?? new Date(Date.parse(now) + eventFallbackMs(wake.eventType)));
         const mediaIds = expectedWakeMediaIds(wake);
         const completionPolicy = wake.completionPolicy ?? "any";
         this.db.prepare(`INSERT INTO repair_case_wakes (case_id, type, provider, event_type, media_id, media_ids_json, completion_policy, created_at)
           VALUES (?, 'arr_event', ?, ?, ?, ?, ?, ?)`).run(caseId, wake.provider, wake.eventType ?? null, mediaIds[0] ?? null, json(mediaIds), completionPolicy, now);
-        this.db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE case_id = ?").run(fallbackAt, caseId);
       }
       this.transition(caseId, "waiting", { actor: "system", details: { wake: wake.type } });
       if (wake.type === "arr_event") {
@@ -341,7 +339,7 @@ export class RepairCaseStore {
   }
 
   nextTimerDueAt(): string | undefined {
-    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE due_at IS NOT NULL").get() as { due_at: string | null }).due_at ?? undefined;
+    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE type = 'timer' AND due_at IS NOT NULL").get() as { due_at: string | null }).due_at ?? undefined;
   }
 
   nextDeliveryDueAt(): string | undefined {
@@ -354,12 +352,12 @@ export class RepairCaseStore {
     return this.db.transaction(() => {
       const at = timestamp(now);
       const rows = this.db.prepare(`SELECT w.case_id, w.type FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
-        WHERE w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
+        WHERE w.type = 'timer' AND w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
         .all(at, Math.max(1, limit)) as Array<{ case_id: string; type: RepairCaseWake["type"] }>;
       const cases: RepairCase[] = [];
       for (const row of rows) {
         this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(row.case_id);
-        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer", details: { reason: row.type === "arr_event" ? "webhook_fallback" : "timer" } });
+        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer", details: { reason: "timer" } });
         if (resumed) cases.push(resumed);
       }
       return cases;
@@ -375,7 +373,7 @@ export class RepairCaseStore {
         .run(due, now, provider);
       if (result.changes > 0) {
         this.db.prepare(`INSERT INTO repair_case_activity (case_id, kind, actor, details_json, created_at)
-          SELECT case_id, 'webhook_fallback', 'system', ?, ? FROM repair_case_wakes WHERE type = 'timer' AND due_at = ?`)
+          SELECT case_id, 'provider_disabled', 'system', ?, ? FROM repair_case_wakes WHERE type = 'timer' AND due_at = ?`)
           .run(json({ provider, reason: "integration_disabled", dueAt: due }), now, due);
       }
       return result.changes;
@@ -553,7 +551,7 @@ function wakeFromRow(row: WakeRow): RepairCaseWake {
     ? { id: row.id, caseId: row.case_id, type: "timer", dueAt: row.due_at!, createdAt: row.created_at }
     : { id: row.id, caseId: row.case_id, type: "arr_event", provider: row.provider!, eventType: row.event_type ?? undefined,
       mediaId: row.media_id ?? undefined, mediaIds: wakeRowMediaIds(row), completionPolicy: row.completion_policy ?? "any",
-      fallbackAt: row.due_at ?? undefined, createdAt: row.created_at };
+      createdAt: row.created_at };
 }
 function outboxFromRow(row: OutboxRow): RepairCaseOutboxItem {
   return { id: row.id, caseId: row.case_id, kind: row.kind, payload: parseJson(row.payload_json), dedupeKey: row.dedupe_key ?? undefined,
@@ -564,12 +562,6 @@ function timestamp(value: Date | string): string { return typeof value === "stri
 function json(value: unknown): string | null { return value === undefined ? null : JSON.stringify(value) ?? "null"; }
 function parseJson(value: string | null): unknown { return value === null ? undefined : JSON.parse(value); }
 function objectDetails(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : value === undefined ? {} : { details: value }; }
-function eventFallbackMs(eventType?: string): number {
-  if (eventType === "download" || eventType === "import") return 15 * 60_000;
-  if (eventType === "grab") return 60 * 60_000;
-  return 30 * 60_000;
-}
-
 function expectedWakeMediaIds(wake: Extract<RepairCaseWake, { type: "arr_event" }>): string[] {
   return [...new Set([...(wake.mediaIds ?? []), ...(wake.mediaId ? [wake.mediaId] : [])])];
 }

@@ -18,7 +18,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 - Retain complete context with each repair thread.
 - Create a dedicated public Discord thread for each issue, keep participants informed, and continue repairs after downloads or other external work finishes.
 - Persist ongoing repairs across restarts and manage working, waiting, blocked, and completed cases from Ongoing Repairs.
-- Resume waiting repairs from Sonarr or Radarr webhooks, with event replay and bounded fallback checks when a webhook is missed.
+- Resume waiting repairs from Sonarr or Radarr webhooks, with event replay for updates that arrive just before a wait is stored.
 - Track queued and completed service workers from the Agent Tasks page.
 - Configure connections, model behavior, timeouts, and repair policy from the web portal.
 
