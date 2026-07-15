@@ -58,6 +58,7 @@ const repairCaseService = new RepairCaseService(repairCases, {
           return Boolean(lastReceivedAt && Date.parse(lastReceivedAt) >= Date.now() - 7 * 86_400_000);
         })
       : [];
+    let webhookProgressSent = false;
     const result = await agent.runRepairCase({
       objective: repairCase.objective,
       checkpoint: repairCase.checkpoint,
@@ -78,7 +79,8 @@ const repairCaseService = new RepairCaseService(repairCases, {
         onProgress: async (update) => {
           if (update.type !== "tasks_started") return;
           await discord.setRepairCaseStage(repairCase.id, "repairing");
-          if (runContext.resume?.source === "webhook") {
+          if (runContext.resume?.source === "webhook" && !webhookProgressSent) {
+            webhookProgressSent = true;
             const provider = runContext.resume.provider === "radarr" ? "Radarr" : "Sonarr";
             await runContext.progress(`${provider} reported new activity for this repair. I’m verifying the result now.`);
           } else if (update.message?.trim()) {
@@ -100,11 +102,11 @@ const repairCaseService = new RepairCaseService(repairCases, {
     }
     if (control.type === "wait") {
       const wake = control.provider
-        ? { type: "arr_event" as const, provider: control.provider, eventType: control.eventType, mediaId: control.mediaId }
+        ? { type: "arr_event" as const, provider: control.provider, eventType: control.eventType, mediaIds: control.mediaIds ?? (control.mediaId ? [control.mediaId] : []), completionPolicy: control.completionPolicy }
         : { type: "timer" as const, dueAt: normalizeResumeAt(control.resumeAt) };
       return {
         wake,
-        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${control.mediaId}` : control.resumeAt },
+        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt },
         activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake } },
         deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:wait` }],
       };

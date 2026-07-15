@@ -38,7 +38,7 @@ const RADARR_READ_TOOLS = [
   "get_radarr_command",
 ] as const;
 
-const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "search_plex_library_section", "get_plex_metadata_children", "get_service_health"] as const;
+const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "search_plex_library_section", "get_plex_metadata_children", "get_plex_tv_season", "get_service_health"] as const;
 
 const SONARR_WRITE_TOOLS = [
   "trigger_sonarr_series_search",

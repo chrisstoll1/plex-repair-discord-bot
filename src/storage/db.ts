@@ -160,6 +160,8 @@ function migrate(db: AppDatabase): void {
       provider TEXT,
       event_type TEXT,
       media_id TEXT,
+      media_ids_json TEXT,
+      completion_policy TEXT NOT NULL DEFAULT 'any',
       created_at TEXT NOT NULL,
       CHECK ((type = 'timer' AND due_at IS NOT NULL) OR (type = 'arr_event' AND provider IS NOT NULL))
     );
@@ -180,6 +182,14 @@ function migrate(db: AppDatabase): void {
       payload_json TEXT,
       received_at TEXT NOT NULL,
       UNIQUE (provider, event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS repair_case_event_consumptions (
+      case_id TEXT NOT NULL REFERENCES repair_cases(id) ON DELETE CASCADE,
+      inbound_event_id INTEGER NOT NULL REFERENCES repair_inbound_events(id) ON DELETE CASCADE,
+      wake_id INTEGER,
+      consumed_at TEXT NOT NULL,
+      PRIMARY KEY (case_id, inbound_event_id)
     );
 
     CREATE TABLE IF NOT EXISTS repair_case_outbox (
@@ -203,6 +213,9 @@ function migrate(db: AppDatabase): void {
       ON repair_case_outbox (status, available_at, id);
   `);
   ensureColumn(db, "repair_inbound_events", "media_ids_json", "TEXT");
+  ensureColumn(db, "repair_case_wakes", "media_ids_json", "TEXT");
+  ensureColumn(db, "repair_case_wakes", "completion_policy", "TEXT NOT NULL DEFAULT 'any'");
+  ensureColumn(db, "repair_case_event_consumptions", "wake_id", "INTEGER");
   const now = new Date().toISOString();
   db.prepare(`UPDATE repair_cases SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL,
       cancelled_at = COALESCE(cancelled_at, ?)

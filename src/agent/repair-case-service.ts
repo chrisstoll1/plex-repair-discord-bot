@@ -46,6 +46,8 @@ export type RepairCaseServiceOptions = {
   maxConcurrent?: number;
   leaseMs?: number;
   maxRuntimeMs?: number;
+  heartbeatIdleMs?: number;
+  heartbeatPollMs?: number;
   ownerId?: string;
   logger?: Logger;
 };
@@ -223,6 +225,7 @@ export class RepairCaseService {
     let runAgain = false;
     let lastProgressAt = Date.now();
     let heartbeatCount = 0;
+    const progressMessages = new Set<string>();
     const timeout = setTimeout(() => {
       timedOut = true;
       void this.options.onCancelWork?.(id);
@@ -230,7 +233,7 @@ export class RepairCaseService {
     }, Math.min(this.options.maxRuntimeMs ?? DEFAULT_RUNTIME_MS, leaseMs));
     timeout.unref?.();
     const heartbeat = setInterval(() => {
-      if (heartbeatCount >= 2 || Date.now() - lastProgressAt < 120_000) return;
+      if (heartbeatCount >= 1 || Date.now() - lastProgressAt < (this.options.heartbeatIdleMs ?? 120_000)) return;
       const current = this.store.get(id);
       if (!current || current.leaseOwner !== this.ownerId) return;
       heartbeatCount += 1;
@@ -239,7 +242,7 @@ export class RepairCaseService {
       this.store.addActivity(id, "progress", content, this.ownerId);
       this.store.enqueueDelivery(id, "discord_message", { content }, { dedupeKey: `${id}:attempt:${repairCase.attempts}:heartbeat:${heartbeatCount}` });
       void this.flushDeliveries();
-    }, 30_000);
+    }, this.options.heartbeatPollMs ?? 30_000);
     heartbeat.unref?.();
 
     try {
@@ -253,6 +256,9 @@ export class RepairCaseService {
         signal: controller.signal,
         resume,
         progress: async (progress) => {
+          const normalized = JSON.stringify(progress) ?? String(progress);
+          if (progressMessages.has(normalized)) return;
+          progressMessages.add(normalized);
           const current = this.store.get(id);
           if (current && current.leaseOwner === this.ownerId) {
             lastProgressAt = Date.now();

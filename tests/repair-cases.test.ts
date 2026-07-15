@@ -122,6 +122,48 @@ test("inbound events match provider, event type, and media and are deduplicated"
   assert.equal((store.latestActivity(late.id)?.details as { reason?: string }).reason, "recent_event");
 });
 
+test("multi-media waits resume only after all expected events and do not replay consumed events", (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("all-episodes"));
+  const expected = ["episode:1", "episode:2", "episode:3"];
+  store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: expected, completionPolicy: "all" });
+
+  assert.deepEqual(store.receiveEvent({ provider: "sonarr", eventId: "one", eventType: "download", mediaIds: ["episode:1", "series:9"] }).matchedCaseIds, []);
+  assert.equal(store.get(repairCase.id)?.status, "waiting");
+  assert.deepEqual(store.receiveEvent({ provider: "sonarr", eventId: "two", eventType: "download", mediaId: "episode:2" }).matchedCaseIds, []);
+  assert.deepEqual(store.receiveEvent({ provider: "sonarr", eventId: "three", eventType: "download", mediaId: "episode:3" }).matchedCaseIds, [repairCase.id]);
+  assert.equal(store.get(repairCase.id)?.status, "ready");
+
+  store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: expected, completionPolicy: "all" });
+  assert.equal(store.get(repairCase.id)?.status, "waiting");
+  assert.deepEqual(store.receiveEvent({ provider: "sonarr", eventId: "one-again", eventType: "download", mediaId: "episode:1" }).matchedCaseIds, []);
+  assert.equal(store.get(repairCase.id)?.status, "waiting");
+});
+
+test("service suppresses duplicate progress and emits only one idle heartbeat", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("quiet-progress"));
+  const delivered: unknown[] = [];
+  const service = new RepairCaseService(store, {
+    heartbeatIdleMs: 10,
+    heartbeatPollMs: 2,
+    runner: async (_current, context) => {
+      await context.progress("Checking the imported episodes.");
+      await context.progress("Checking the imported episodes.");
+      await delay(50);
+      return { status: "resolved" };
+    },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.deepEqual(delivered, ["Checking the imported episodes.", { content: "I’m still working through this. I’ll update you when there’s a useful result." }]);
+  assert.equal(store.listActivity(repairCase.id).filter((entry) => entry.kind === "progress").length, 2);
+  await service.shutdown();
+});
+
 test("event waits receive a bounded fallback and webhook context reaches the next run", async (t) => {
   let now = new Date("2026-07-10T12:00:00.000Z");
   const { db } = openFixture(t);

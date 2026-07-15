@@ -39,7 +39,7 @@ export type AgentRequestContext = {
 };
 
 export type RepairCaseControlResult =
-  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; resumeAt?: string }
+  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string }
   | { type: "finish"; status: "resolved" | "needs_input" | "blocked"; userUpdate: string; checkpoint: string };
 
 export type RepairCaseControl = {
@@ -607,14 +607,17 @@ export class PiAgentService {
             provider: Type.Optional(Type.Union([Type.Literal("sonarr"), Type.Literal("radarr")])),
             eventType: Type.Optional(Type.String({ description: "Normalized webhook event type to wait for, such as download or grab" })),
             mediaId: Type.Optional(Type.String({ description: "Provider-qualified media key such as episode:123, series:45, or movie:67" })),
+            mediaIds: Type.Optional(Type.Array(Type.String(), { description: "All provider-qualified media keys expected to change for a multi-item repair" })),
+            completionPolicy: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("all")], { description: "Use all when every listed media ID must report progress before resuming" })),
             resumeAt: Type.Optional(Type.String({ description: "ISO timestamp for a timed resume. Use only when no available event integration covers the expected change." })),
           }),
-          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; resumeAt?: string }) => {
+          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string }) => {
             const eventAvailable = params.provider && context.caseControl!.webhookProviders.includes(params.provider);
-            if (eventAvailable && (!params.eventType || !params.mediaId)) throw new Error("An event wait requires eventType and mediaId");
+            const mediaIds = [...new Set([...(params.mediaIds ?? []), ...(params.mediaId ? [params.mediaId] : [])])];
+            if (eventAvailable && (!params.eventType || mediaIds.length === 0)) throw new Error("An event wait requires eventType and at least one media ID");
             if (!eventAvailable && !params.resumeAt) throw new Error("A timed resumeAt is required when no matching event integration is available");
             const result: RepairCaseControlResult = eventAvailable
-              ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaId: params.mediaId }
+              ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaIds, completionPolicy: params.completionPolicy ?? (mediaIds.length > 1 ? "all" : "any") }
               : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt };
             context.caseControl!.setResult(result);
             return toolResponse({ accepted: true, wake: eventAvailable ? "event" : "time" });
@@ -752,6 +755,19 @@ export class PiAgentService {
         parameters: Type.Object({ ratingKey: Type.String({ description: "Plex ratingKey for a show, season, or other metadata item" }) }),
         execute: async (_toolCallId, params: { ratingKey: string }) => {
           const results = await clients().plex.getMetadataChildren(params.ratingKey);
+          return toolResponse(results);
+        },
+      }),
+      defineTool({
+        name: "get_plex_tv_season",
+        label: "Get a Plex TV season",
+        description: "Return compact episode and media-file records for one TV season. Use this to verify exact episode availability without relying on a potentially truncated show children listing.",
+        parameters: Type.Object({
+          showRatingKey: Type.String({ description: "Plex ratingKey for the TV show" }),
+          seasonNumber: Type.Number({ description: "Season number to inspect" }),
+        }),
+        execute: async (_toolCallId, params: { showRatingKey: string; seasonNumber: number }) => {
+          const results = await clients().plex.getTvSeasonEpisodes(params.showRatingKey, params.seasonNumber);
           return toolResponse(results);
         },
       }),
