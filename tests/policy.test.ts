@@ -52,7 +52,7 @@ function runtimeSettings(): RuntimeSettings {
     sonarr: { url: "", apiKey: "" },
     radarr: { url: "", apiKey: "" },
     plex: { url: "", token: "" },
-    ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium" },
+    ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium", serviceTier: "default" },
     timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
     repair: { requireConfirmation: false, allowDestructive: true },
   };

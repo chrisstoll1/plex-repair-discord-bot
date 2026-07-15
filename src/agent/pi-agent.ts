@@ -82,6 +82,16 @@ const MAX_COORDINATORS = 6;
 const MAX_COORDINATORS_PER_USER = 2;
 const MAX_COORDINATOR_RUNTIME_MS = 12 * 60 * 1000;
 
+export function applyOpenAiCodexServiceTier(
+  payload: unknown,
+  provider: string,
+  serviceTier: RuntimeSettings["ai"]["serviceTier"],
+): unknown {
+  if (provider !== "openai-codex" || serviceTier !== "priority") return payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  return { ...payload, service_tier: serviceTier };
+}
+
 type StartManyToolAgentsParams = {
   progressMessage: string;
   tasks: ToolAgentTaskParams[];
@@ -404,6 +414,12 @@ export class PiAgentService {
       settingsManager,
       resourceLoader: loader,
     });
+
+    const onPayload = session.agent.onPayload;
+    session.agent.onPayload = async (payload, requestModel) => {
+      const transformedPayload = (await onPayload?.(payload, requestModel)) ?? payload;
+      return applyOpenAiCodexServiceTier(transformedPayload, requestModel.provider, settings.ai.serviceTier);
+    };
 
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {

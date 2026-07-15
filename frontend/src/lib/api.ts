@@ -13,7 +13,12 @@ export type Settings = {
   sonarr: { url: string; apiKey: SecretValue };
   radarr: { url: string; apiKey: SecretValue };
   plex: { url: string; token: SecretValue };
-  ai: { modelProvider: string; modelId: string; thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" };
+  ai: {
+    modelProvider: string;
+    modelId: string;
+    thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    serviceTier: "default" | "priority";
+  };
   timeouts: { standardSeconds: number; releaseLookupSeconds: number };
   repair: { requireConfirmation: boolean; allowDestructive: boolean };
 };

@@ -20,6 +20,7 @@ export const settingsSchema = z.object({
     modelProvider: z.string().min(1, "Model provider is required"),
     modelId: z.string(),
     thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+    serviceTier: z.enum(["default", "priority"]),
   }),
   timeouts: z.object({
     standardSeconds: z.number().int().min(5).max(600),

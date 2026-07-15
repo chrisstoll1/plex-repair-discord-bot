@@ -26,6 +26,7 @@ export const aiSettingsSchema = z.object({
   modelProvider: z.string().default("openai-codex"),
   modelId: z.string().default(""),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
+  serviceTier: z.enum(["default", "priority"]).default("default"),
 });
 
 export const timeoutSettingsSchema = z.object({

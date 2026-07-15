@@ -50,6 +50,7 @@ const settingsUpdateSchema = z
         modelProvider: nonEmptyTrimmedString,
         modelId: z.string().trim(),
         thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+        serviceTier: z.enum(["default", "priority"]).default("default"),
       })
       .strict(),
     timeouts: z
@@ -394,7 +395,7 @@ function sendError(reply: FastifyReply, statusCode: number, code: string, messag
 function normalizeSettings(update: SettingsUpdate): SettingsUpdate {
   return {
     ...update,
-    ai: aiSettingsSchema.pick({ modelProvider: true, modelId: true, thinkingLevel: true }).parse(update.ai),
+    ai: aiSettingsSchema.pick({ modelProvider: true, modelId: true, thinkingLevel: true, serviceTier: true }).parse(update.ai),
     timeouts: timeoutSettingsSchema.parse(update.timeouts),
     repair: repairSettingsSchema.parse(update.repair),
   };
@@ -444,6 +445,7 @@ function publicSettings(settings: RuntimeSettings) {
       modelProvider: settings.ai.modelProvider,
       modelId: settings.ai.modelId,
       thinkingLevel: settings.ai.thinkingLevel,
+      serviceTier: settings.ai.serviceTier,
     },
     timeouts: settings.timeouts,
     repair: settings.repair,

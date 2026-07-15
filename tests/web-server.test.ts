@@ -78,6 +78,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   const read = await app.inject({ method: "GET", url: "/api/settings" });
   assert.equal(read.statusCode, 200);
   assert.deepEqual(read.json().settings.discord.token, { configured: true });
+  assert.equal(read.json().settings.ai.serviceTier, "default");
   assert.doesNotMatch(read.body, /never-return-this/);
 
   const invalid = await app.inject({
@@ -92,10 +93,12 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   const updated = await app.inject({
     method: "PUT",
     url: "/api/settings",
-    payload: settingsPayload({ discordToken: { action: "clear" } }),
+    payload: settingsPayload({ discordToken: { action: "clear" }, serviceTier: "priority" }),
   });
   assert.equal(updated.statusCode, 200);
   assert.deepEqual(updated.json().settings.discord.token, { configured: false });
+  assert.equal(updated.json().settings.ai.serviceTier, "priority");
+  assert.equal(settings.getJson<{ serviceTier?: string }>("ai", {}).serviceTier, "priority");
   assert.equal(settings.getString("discord.token"), undefined);
   assert.equal(restartCount, 1);
 
@@ -128,7 +131,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.match((await app.inject({ method: "GET", url: "/connections" })).body, /Repairman/);
 });
 
-function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { action: "keep" | "clear" } } = {}) {
+function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { action: "keep" | "clear" }; serviceTier?: "default" | "priority" } = {}) {
   return {
     discord: {
       token: overrides.discordToken ?? { action: "keep" },
@@ -142,7 +145,7 @@ function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { actio
     sonarr: { url: overrides.sonarrUrl ?? "", apiKey: { action: "keep" } },
     radarr: { url: "", apiKey: { action: "keep" } },
     plex: { url: "", token: { action: "keep" } },
-    ai: { modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium" },
+    ai: { modelProvider: "openai-codex", modelId: "", thinkingLevel: "medium", serviceTier: overrides.serviceTier ?? "default" },
     timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
     repair: { requireConfirmation: true, allowDestructive: false },
   };
