@@ -11,11 +11,19 @@ import { useToast } from "./toast";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, ConfirmDialog, Input, Label, Switch } from "./ui";
 
 export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
-  const queryClient = useQueryClient();
-  const toast = useToast();
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "bot" });
-  const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settingsQuery.data });
+
+  if (settingsQuery.isPending) return <LoadingState label="Loading configuration" />;
+  if (settingsQuery.isError) return <ErrorState error={settingsQuery.error} retry={() => settingsQuery.refetch()} />;
+
+  return <SettingsForm mode={mode} settings={settingsQuery.data} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />;
+}
+
+function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { mode: "connections" | "bot"; settings: Settings; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settings });
   const { formState: { isDirty, errors, isSubmitting }, handleSubmit, register, control, reset, setValue, watch } = form;
   const blocker = useBlocker(isDirty);
 
@@ -36,15 +44,12 @@ export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
     onError: (error) => toast({ tone: "error", title: "Save failed", description: error.message }),
   });
 
-  if (settingsQuery.isPending) return <LoadingState label="Loading configuration" />;
-  if (settingsQuery.isError) return <ErrorState error={settingsQuery.error} retry={() => settingsQuery.refetch()} />;
-
   const submit = handleSubmit((values) => mutation.mutateAsync(values));
   return <form onSubmit={submit} noValidate className="space-y-5">
-    {mode === "connections" ? <ConnectionsFields form={{ register, control, setValue, watch, errors }} /> : <BotFields form={{ register, control, setValue, watch, errors }} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />}
+    {mode === "connections" ? <ConnectionsFields form={{ register, control, setValue, watch, errors }} /> : <BotFields form={{ register, control, setValue, watch, errors }} models={models} modelsPending={modelsPending} modelsError={modelsError} />}
     <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-xl border border-line bg-[#11171c]/95 p-3 shadow-2xl backdrop-blur sm:flex-row sm:items-center sm:justify-between">
       <p className="px-1 text-xs text-zinc-500">{isDirty ? <span className="text-amber-300">Unsaved configuration changes</span> : "All changes saved"}</p>
-      <div className="flex gap-2"><Button type="button" variant="ghost" disabled={!isDirty || isSubmitting} onClick={() => reset(settingsQuery.data)}><RotateCcw className="h-4 w-4" />Reset</Button><Button type="submit" disabled={!isDirty || isSubmitting || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save changes</Button></div>
+      <div className="flex gap-2"><Button type="button" variant="ghost" disabled={!isDirty || isSubmitting} onClick={() => reset(settings)}><RotateCcw className="h-4 w-4" />Reset</Button><Button type="submit" disabled={!isDirty || isSubmitting || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save changes</Button></div>
     </div>
     <ConfirmDialog open={blocker.state === "blocked"} onOpenChange={(open) => { if (!open && blocker.state === "blocked") blocker.reset(); }} title="Discard unsaved changes?" description="You have configuration changes that have not been saved. Leaving this view will discard them." confirmLabel="Discard and leave" destructive onConfirm={() => blocker.state === "blocked" && blocker.proceed()} />
   </form>;
