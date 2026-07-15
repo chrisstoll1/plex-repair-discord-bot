@@ -46,8 +46,6 @@ export type RepairCaseServiceOptions = {
   maxConcurrent?: number;
   leaseMs?: number;
   maxRuntimeMs?: number;
-  heartbeatIdleMs?: number;
-  heartbeatPollMs?: number;
   ownerId?: string;
   logger?: Logger;
 };
@@ -223,8 +221,6 @@ export class RepairCaseService {
     this.controllers.set(id, controller);
     let timedOut = false;
     let runAgain = false;
-    let lastProgressAt = Date.now();
-    let heartbeatCount = 0;
     const progressMessages = new Set<string>();
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -232,18 +228,6 @@ export class RepairCaseService {
       controller.abort(new Error(`Repair case ${id} exceeded max runtime`));
     }, Math.min(this.options.maxRuntimeMs ?? DEFAULT_RUNTIME_MS, leaseMs));
     timeout.unref?.();
-    const heartbeat = setInterval(() => {
-      if (heartbeatCount >= 1 || Date.now() - lastProgressAt < (this.options.heartbeatIdleMs ?? 120_000)) return;
-      const current = this.store.get(id);
-      if (!current || current.leaseOwner !== this.ownerId) return;
-      heartbeatCount += 1;
-      lastProgressAt = Date.now();
-      const content = "I’m still working through this. I’ll update you when there’s a useful result.";
-      this.store.addActivity(id, "progress", content, this.ownerId);
-      this.store.enqueueDelivery(id, "discord_message", { content }, { dedupeKey: `${id}:attempt:${repairCase.attempts}:heartbeat:${heartbeatCount}` });
-      void this.flushDeliveries();
-    }, this.options.heartbeatPollMs ?? 30_000);
-    heartbeat.unref?.();
 
     try {
       try {
@@ -261,7 +245,6 @@ export class RepairCaseService {
           progressMessages.add(normalized);
           const current = this.store.get(id);
           if (current && current.leaseOwner === this.ownerId) {
-            lastProgressAt = Date.now();
             this.store.addActivity(id, "progress", progress, this.ownerId);
             this.store.enqueueDelivery(id, "discord_message", progress);
             await this.options.onProgress?.(current, progress);
@@ -327,7 +310,6 @@ export class RepairCaseService {
       }
     } finally {
       clearTimeout(timeout);
-      clearInterval(heartbeat);
       const current = this.store.get(id);
       if (current?.leaseOwner === this.ownerId) {
         if (this.stopping) {

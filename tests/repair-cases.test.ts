@@ -141,14 +141,12 @@ test("multi-media waits resume only after all expected events and do not replay 
   assert.equal(store.get(repairCase.id)?.status, "waiting");
 });
 
-test("service suppresses duplicate progress and emits only one idle heartbeat", async (t) => {
+test("service suppresses duplicate progress without adding idle messages", async (t) => {
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db);
   const repairCase = store.create(caseParams("quiet-progress"));
   const delivered: unknown[] = [];
   const service = new RepairCaseService(store, {
-    heartbeatIdleMs: 10,
-    heartbeatPollMs: 2,
     runner: async (_current, context) => {
       await context.progress("Checking the imported episodes.");
       await context.progress("Checking the imported episodes.");
@@ -159,8 +157,8 @@ test("service suppresses duplicate progress and emits only one idle heartbeat", 
   });
   service.start();
   await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
-  assert.deepEqual(delivered, ["Checking the imported episodes.", { content: "I’m still working through this. I’ll update you when there’s a useful result." }]);
-  assert.equal(store.listActivity(repairCase.id).filter((entry) => entry.kind === "progress").length, 2);
+  assert.deepEqual(delivered, ["Checking the imported episodes."]);
+  assert.equal(store.listActivity(repairCase.id).filter((entry) => entry.kind === "progress").length, 1);
   await service.shutdown();
 });
 
