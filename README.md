@@ -159,15 +159,16 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Images are published from `master` and manual workflow runs with these tags:
+Images are published from `master` with an automatic version based on the GitHub Actions run number. For example, workflow run 32 produces application version `0.1.32`; local builds display `dev`. Manual runs on other branches validate and build the image without publishing it.
 
 | Tag | Use |
 | --- | --- |
 | `latest` | Current mutable build from `master` |
-| `<package-version>` | Version label; mutable when rebuilt without a version bump |
-| `sha-<commit-sha>` | Immutable build for a specific commit |
+| `0.1.<run-number>` | Automatic build version; points to the latest successful attempt for that run |
+| `build-<run-number>.<run-attempt>` | Exact workflow attempt, including reruns |
+| `sha-<commit-sha>` | Build for a specific source commit |
 
-Use a SHA tag when reproducible deployment or rollback is important.
+The web menu links the displayed version to this repository. Use an exact build-attempt tag or image digest when reproducible deployment or rollback is important.
 
 ## Development
 

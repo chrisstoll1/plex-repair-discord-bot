@@ -8,6 +8,8 @@ RUN npm --prefix frontend ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY frontend ./frontend
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
