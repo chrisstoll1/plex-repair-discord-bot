@@ -34,6 +34,7 @@ test("read-only profiles contain no repair tools", () => {
     assert.equal(TOOL_PROFILES[profile].some((tool) => WRITE_TOOLS.has(tool)), false, profile);
     assert.equal(isRepairToolProfile(profile), false);
   }
+  assert.equal(TOOL_PROFILES.plex_agent.includes("get_plex_library_status"), true);
 });
 
 test("repair profiles expose every write tool once and remain service-scoped", () => {

@@ -80,6 +80,46 @@ test("Plex section search queries actual library metadata", async (t) => {
   assert.match(result, /ratingKey="123"/);
 });
 
+test("Plex library status reports active scans", async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.setHeader("Content-Type", "application/xml");
+    response.end('<MediaContainer><Directory key="2" type="show" title="TV Shows" refreshing="1" /><Directory key="3" type="show" title="Anime" refreshing="0" /></MediaContainer>');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new PlexClient({ url: `http://127.0.0.1:${address.port}`, token: "secret" });
+
+  assert.deepEqual(await client.getLibrarySectionStatus(2), { sectionId: 2, title: "TV Shows", type: "show", refreshing: true });
+  assert.deepEqual(await client.getLibrarySectionStatus(3), { sectionId: 3, title: "Anime", type: "show", refreshing: false });
+  await assert.rejects(client.getLibrarySectionStatus(99), /section 99 was not found/);
+});
+
+test("Plex refresh accepts directories, rejects media files, and reports only a submitted request", async (t) => {
+  const requestedUrls: string[] = [];
+  const server = http.createServer((request, response) => {
+    requestedUrls.push(request.url ?? "");
+    response.setHeader("Content-Type", "application/xml");
+    response.end("");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new PlexClient({ url: `http://127.0.0.1:${address.port}`, token: "secret" });
+  const directoryPath = "/mnt/potato-server/Anime/Saga of Tanya the Evil/Season 2";
+
+  assert.deepEqual(await client.refreshLibrarySection(3, directoryPath), { refreshRequested: true, sectionId: 3, directoryPath });
+  assert.match(requestedUrls[0]!, /^\/library\/sections\/3\/refresh\?/);
+  assert.match(decodeURIComponent(requestedUrls[0]!), /path=\/mnt\/potato-server\/Anime\/Saga(?:\+| )of(?:\+| )Tanya(?:\+| )the(?:\+| )Evil\/Season(?:\+| )2/);
+  await assert.rejects(
+    client.refreshLibrarySection(3, `${directoryPath}/Saga of Tanya the Evil - S02E02 - A Strange Friendship WEBDL-1080p.mkv`),
+    /must be a directory, not a media file/,
+  );
+  assert.equal(requestedUrls.length, 1);
+});
+
 test("Plex season lookup returns compact episodes when the season is beyond the tool response limit", async (t) => {
   const requestedUrls: string[] = [];
   const filler = Array.from({ length: 60 }, (_, index) => `<Directory ratingKey="${1000 + index}" index="${100 + index}" title="${"x".repeat(220)}" />`).join("");

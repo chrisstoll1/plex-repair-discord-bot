@@ -26,6 +26,13 @@ export type PlexTvSeason = {
   }>;
 };
 
+export type PlexLibrarySectionStatus = {
+  sectionId: number;
+  title?: string;
+  type?: string;
+  refreshing: boolean;
+};
+
 export class PlexClient {
   constructor(
     private readonly settings: PlexConnectionSettings,
@@ -52,6 +59,20 @@ export class PlexClient {
 
   async getLibrarySections(): Promise<string> {
     return this.requestText("/library/sections");
+  }
+
+  async getLibrarySectionStatus(sectionId: number): Promise<PlexLibrarySectionStatus> {
+    const xml = await this.getLibrarySections();
+    const section = xmlElements(xml, "Directory")
+      .map(readXmlAttributes)
+      .find((attributes) => Number(attributes.key) === sectionId);
+    if (!section) throw new Error(`Plex library section ${sectionId} was not found`);
+    return {
+      sectionId,
+      ...(section.title ? { title: section.title } : {}),
+      ...(section.type ? { type: section.type } : {}),
+      refreshing: section.refreshing === "1" || section.refreshing === "true",
+    };
   }
 
   async searchLibrarySection(sectionId: number, title: string): Promise<string> {
@@ -89,9 +110,12 @@ export class PlexClient {
     return { showRatingKey, seasonNumber, found: true, seasonRatingKey: season.ratingKey, episodes };
   }
 
-  async refreshLibrarySection(sectionId: number, mediaPath?: string): Promise<{ refreshTriggered: true; sectionId: number; path?: string; response?: string }> {
-    const response = await this.requestText(buildQueryPath(`/library/sections/${sectionId}/refresh`, { path: mediaPath }));
-    return { refreshTriggered: true, sectionId, ...(mediaPath ? { path: mediaPath } : {}), ...(response ? { response } : {}) };
+  async refreshLibrarySection(sectionId: number, directoryPath?: string): Promise<{ refreshRequested: true; sectionId: number; directoryPath?: string; response?: string }> {
+    if (directoryPath && MEDIA_FILE_EXTENSION.test(directoryPath)) {
+      throw new Error(`Plex refresh path must be a directory, not a media file: ${directoryPath}`);
+    }
+    const response = await this.requestText(buildQueryPath(`/library/sections/${sectionId}/refresh`, { path: directoryPath }));
+    return { refreshRequested: true, sectionId, ...(directoryPath ? { directoryPath } : {}), ...(response ? { response } : {}) };
   }
 
   private async requestText(path: string): Promise<string> {
@@ -112,6 +136,8 @@ export class PlexClient {
     });
   }
 }
+
+const MEDIA_FILE_EXTENSION = /\.(?:avi|flv|m2ts|m4v|mkv|mov|mp4|mpeg|mpg|ts|webm|wmv)$/i;
 
 function readXmlAttribute(xml: string, name: string): string | undefined {
   const match = new RegExp(`${name}="([^"]*)"`).exec(xml);

@@ -33,3 +33,10 @@ export function plexVerificationBlockedMessage(state: PlexVerificationState): st
   const missing = state.missingMedia.length > 0 ? ` Plex still cannot see: ${state.missingMedia.join(", ")}.` : "";
   return `Plex still hasn’t indexed the new files after two follow-up checks.${missing} The downloads are present, but the Plex library or server configuration now needs to be checked manually.`;
 }
+
+export function requireActivePlexScan(status: PlexLibrarySectionStatus): void {
+  if (!status.refreshing) {
+    throw new Error("Plex is not actively scanning this library. Verify the exact media once, then finish the repair instead of scheduling another indexing check.");
+  }
+}
+import type { PlexLibrarySectionStatus } from "../services/plex-client.js";

@@ -19,7 +19,7 @@ import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
-import { readPlexVerification, type PlexVerificationState } from "./plex-verification.js";
+import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -630,16 +630,19 @@ export class PiAgentService {
         defineTool({
           name: "wait_for_plex_indexing",
           label: "Wait for Plex indexing",
-          description: "After one accepted Plex refresh, suspend until a timed exact-media verification. Repeated use is bounded and cannot trigger another Plex refresh.",
+          description: "After one Plex refresh request, suspend until a timed exact-media verification only if the library is actively scanning. Repeated use is bounded and cannot trigger another Plex refresh.",
           parameters: Type.Object({
             userUpdate: Type.String({ description: "Short plain-language update explaining that Plex indexing will be checked automatically", maxLength: 500 }),
             checkpoint: Type.String({ description: "Compact internal summary including the accepted refresh, show or movie rating key, path, and next exact verification", maxLength: 6000 }),
+            sectionId: Type.Number({ description: "Plex library section ID whose active scan was verified" }),
             missingMedia: Type.Array(Type.String(), { minItems: 1, description: "Exact episode or movie labels Plex still cannot see" }),
             resumeAt: Type.String({ description: "ISO timestamp for the next Plex verification" }),
           }),
-          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; missingMedia: string[]; resumeAt: string }) => {
+          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; sectionId: number; missingMedia: string[]; resumeAt: string }) => {
+            const status = await createMediaClients(this.store, this.logger).plex.getLibrarySectionStatus(params.sectionId);
+            requireActivePlexScan(status);
             context.caseControl!.setResult({ type: "wait", ...params, waitReason: "plex_indexing" });
-            return toolResponse({ accepted: true, wake: "time", boundedFollowUp: true });
+            return toolResponse({ accepted: true, wake: "time", boundedFollowUp: true, libraryStatus: status });
           },
         }),
         defineTool({
@@ -766,6 +769,13 @@ export class PiAgentService {
           const results = await clients().plex.getLibrarySections();
           return toolResponse(results);
         },
+      }),
+      defineTool({
+        name: "get_plex_library_status",
+        label: "Get Plex library status",
+        description: "Return structured status for one Plex library section, including whether it is actively refreshing.",
+        parameters: Type.Object({ sectionId: Type.Number({ description: "Plex library section ID" }) }),
+        execute: async (_toolCallId, params: { sectionId: number }) => toolResponse(await clients().plex.getLibrarySectionStatus(params.sectionId)),
       }),
       defineTool({
         name: "get_plex_metadata_children",
@@ -1087,20 +1097,20 @@ export class PiAgentService {
       defineTool({
         name: "refresh_plex_library_section",
         label: "Refresh Plex library section",
-        description: "Trigger Plex to scan/refresh a specific library section by section ID. Requires confirmation when configured.",
+        description: "Request a Plex scan for a library section or media directory. HTTP success confirms only that the request was submitted, not that scanning started or media was indexed. Requires confirmation when configured.",
         parameters: Type.Object({
           sectionId: Type.Number({ description: "Plex library section ID, from list_plex_libraries" }),
-          path: Type.Optional(Type.String({ description: "Optional media folder path for a targeted Plex scan" })),
+          directoryPath: Type.Optional(Type.String({ description: "Optional directory path for a targeted Plex scan. Never pass a media file path." })),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
-        execute: async (_toolCallId, params: { sectionId: number; path?: string; confirmed?: boolean }) => {
+        execute: async (_toolCallId, params: { sectionId: number; directoryPath?: string; confirmed?: boolean }) => {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
-            action: `Refresh Plex library section ID ${params.sectionId}`,
+            action: `Refresh Plex library section ID ${params.sectionId}${params.directoryPath ? ` directory ${params.directoryPath}` : ""}`,
             confirmed: params.confirmed,
           });
           if (policy) return policy;
 
-          const results = await clients().plex.refreshLibrarySection(params.sectionId, params.path);
+          const results = await clients().plex.refreshLibrarySection(params.sectionId, params.directoryPath);
           return toolResponse(results);
         },
       }),
@@ -1682,7 +1692,7 @@ function normalizeEventType(value: string): string {
 }
 
 export function repairProgressLimit(resume?: { source: "webhook" | "timer" }): number {
-  return resume ? 1 : 3;
+  return resume ? 1 : 2;
 }
 
 function normalizeRepairTitle(value: string): string {

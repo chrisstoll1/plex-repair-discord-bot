@@ -28,7 +28,7 @@ test("explicitly configured models cannot silently fall back", () => {
 });
 
 test("resumed repairs emit only one task progress update", () => {
-  assert.equal(repairProgressLimit(), 3);
+  assert.equal(repairProgressLimit(), 2);
   assert.equal(repairProgressLimit({ source: "webhook" }), 1);
   assert.equal(repairProgressLimit({ source: "timer" }), 1);
 });

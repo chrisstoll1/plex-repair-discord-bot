@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { advancePlexVerification, plexVerificationBlockedMessage, readPlexVerification } from "../src/agent/plex-verification.js";
+import { advancePlexVerification, plexVerificationBlockedMessage, readPlexVerification, requireActivePlexScan } from "../src/agent/plex-verification.js";
 
 test("Plex verification stops after two timed follow-up checks", () => {
   const initial = advancePlexVerification(undefined, { source: "webhook" }, ["S48E02", "S48E03"]);
@@ -29,4 +29,12 @@ test("Plex verification checkpoint parsing rejects malformed state", () => {
     followUpChecks: 0,
     missingMedia: ["S01E01"],
   });
+});
+
+test("Plex indexing waits require an active library scan", () => {
+  assert.doesNotThrow(() => requireActivePlexScan({ sectionId: 3, refreshing: true }));
+  assert.throws(
+    () => requireActivePlexScan({ sectionId: 3, refreshing: false }),
+    /not actively scanning.*finish the repair instead of scheduling another indexing check/,
+  );
 });
