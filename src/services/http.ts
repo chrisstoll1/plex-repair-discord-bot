@@ -115,7 +115,9 @@ export async function requestMedia<T>(options: MediaRequestOptions): Promise<T> 
     return undefined as T;
   }
 
-  return (options.responseType === "text" ? await response.text() : await response.json()) as T;
+  const body = await response.text();
+  if (options.responseType === "text") return body as T;
+  return (body.trim() ? JSON.parse(body) : undefined) as T;
 }
 
 export function buildQueryPath(path: string, params: Record<string, QueryValue>): string {

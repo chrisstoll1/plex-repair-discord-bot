@@ -22,6 +22,54 @@ export type ReleaseGrabParams = {
   indexerId: number;
 };
 
+export type TargetedReleaseGrabParams = ReleaseGrabParams & {
+  title: string;
+  allowRejected: boolean;
+};
+
+export type ReleasePageParams = {
+  offset?: number;
+  limit?: number;
+  refresh?: boolean;
+};
+
+export type ArrReleaseCandidate = {
+  title: string;
+  guid: string;
+  indexerId: number;
+  indexer?: string;
+  protocol?: string;
+  quality?: string;
+  languages: string[];
+  customFormats: string[];
+  customFormatScore?: number;
+  size?: number;
+  ageHours?: number;
+  seeders?: number;
+  leechers?: number;
+  fullSeason?: boolean;
+  downloadAllowed?: boolean;
+  rejected: boolean;
+  blocklisted: boolean;
+  cutoffOnly: boolean;
+  requiresTargetOverride: boolean;
+  manualGrabEligible: boolean;
+  rejections: string[];
+};
+
+export type ArrReleasePage = {
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  counts: {
+    manualGrabEligible: number;
+    cutoffOnly: number;
+    blocklisted: number;
+  };
+  candidates: ArrReleaseCandidate[];
+};
+
 export type RenameFilesParams = {
   fileIds: number[];
 };
@@ -100,6 +148,8 @@ type ManualImportCandidate = {
 };
 
 export class ArrClient {
+  private readonly releaseCache = new Map<string, unknown[]>();
+
   constructor(
     private readonly name: "sonarr" | "radarr",
     private readonly settings: ArrConnectionSettings,
@@ -284,14 +334,24 @@ export class ArrClient {
     return this.request<unknown>(`/api/v3/moviefile/${movieFileId}`, { method: "DELETE" });
   }
 
-  async getMovieReleases(movieId: number): Promise<unknown> {
+  async getMovieReleases(movieId: number, page: ReleasePageParams = {}): Promise<ArrReleasePage> {
     this.assertService("radarr");
-    return this.request<unknown>(buildQueryPath("/api/v3/release", { movieId }), { timeoutSeconds: this.timeouts.releaseLookupSeconds });
+    return this.releasePage(await this.getRawReleases({ movieId }, page.refresh === true || (page.offset ?? 0) === 0), page);
   }
 
-  async getEpisodeReleases(episodeId: number): Promise<unknown> {
+  async getEpisodeReleases(episodeId: number, page: ReleasePageParams = {}): Promise<ArrReleasePage> {
     this.assertService("sonarr");
-    return this.request<unknown>(buildQueryPath("/api/v3/release", { episodeId }), { timeoutSeconds: this.timeouts.releaseLookupSeconds });
+    return this.releasePage(await this.getRawReleases({ episodeId }, page.refresh === true || (page.offset ?? 0) === 0), page);
+  }
+
+  async grabMovieRelease(movieId: number, params: TargetedReleaseGrabParams): Promise<unknown> {
+    this.assertService("radarr");
+    return this.grabValidatedRelease(await this.getRawReleases({ movieId }, true), { label: `movie ID ${movieId}`, field: "movieId", id: movieId }, params);
+  }
+
+  async grabEpisodeRelease(episodeId: number, params: TargetedReleaseGrabParams): Promise<unknown> {
+    this.assertService("sonarr");
+    return this.grabValidatedRelease(await this.getRawReleases({ episodeId }, true), { label: `episode ID ${episodeId}`, field: "episodeId", id: episodeId }, params);
   }
 
   async triggerMovieSearch(movieId: number): Promise<unknown> {
@@ -334,13 +394,6 @@ export class ArrClient {
   async rescanSeries(seriesId: number): Promise<unknown> {
     this.assertService("sonarr");
     return this.request<unknown>("/api/v3/command", { method: "POST", body: { name: "RescanSeries", seriesId } });
-  }
-
-  async grabRelease(params: ReleaseGrabParams): Promise<unknown> {
-    return this.request<unknown>("/api/v3/release", {
-      method: "POST",
-      body: params,
-    });
   }
 
   async renameFiles(params: RenameFilesParams): Promise<unknown> {
@@ -451,6 +504,53 @@ export class ArrClient {
           filterExistingFiles: params.filterExistingFiles,
         };
   }
+
+  private async getRawReleases(target: { episodeId?: number; movieId?: number }, refresh = false): Promise<unknown[]> {
+    const cacheKey = target.episodeId === undefined ? `movie:${target.movieId}` : `episode:${target.episodeId}`;
+    const cached = this.releaseCache.get(cacheKey);
+    if (!refresh && cached) return cached;
+    const response = await this.request<unknown>(buildQueryPath("/api/v3/release", target), { timeoutSeconds: this.timeouts.releaseLookupSeconds });
+    if (!Array.isArray(response)) throw new Error(`${this.name} release response was not an array`);
+    this.releaseCache.set(cacheKey, response);
+    return response;
+  }
+
+  private releasePage(rawReleases: unknown[], page: ReleasePageParams): ArrReleasePage {
+    const candidates = rawReleases.map(compactRelease).filter((release): release is ArrReleaseCandidate => Boolean(release));
+    const offset = Math.max(0, Math.floor(page.offset ?? 0));
+    const limit = Math.max(1, Math.min(50, Math.floor(page.limit ?? 20)));
+    return {
+      total: candidates.length,
+      offset,
+      limit,
+      hasMore: offset + limit < candidates.length,
+      counts: {
+        manualGrabEligible: candidates.filter((release) => release.manualGrabEligible).length,
+        cutoffOnly: candidates.filter((release) => release.cutoffOnly).length,
+        blocklisted: candidates.filter((release) => release.blocklisted).length,
+      },
+      candidates: candidates.slice(offset, offset + limit),
+    };
+  }
+
+  private async grabValidatedRelease(
+    rawReleases: unknown[],
+    target: { label: string; field: "episodeId" | "movieId"; id: number },
+    params: TargetedReleaseGrabParams,
+  ): Promise<unknown> {
+    const release = rawReleases.map(compactRelease).find((candidate) => candidate?.guid === params.guid && candidate.indexerId === params.indexerId);
+    if (!release) throw new Error(`Selected release was not returned by a fresh search for ${target.label}`);
+    if (release.title !== params.title) throw new Error(`Selected release title changed for ${target.label}`);
+    if (release.blocklisted) throw new Error(`Selected release is blocklisted for ${target.label}`);
+    if ((release.rejected || release.downloadAllowed === false) && !params.allowRejected) {
+      throw new Error(`Selected release is rejected for ${target.label}; allowRejected must be true for an intentional manual grab`);
+    }
+    const result = await this.request<unknown>("/api/v3/release", {
+      method: "POST",
+      body: { guid: params.guid, indexerId: params.indexerId, [target.field]: target.id },
+    });
+    return { target: target.label, selectedRelease: release, result };
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -459,4 +559,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isManualImportCandidate(value: unknown): value is ManualImportCandidate {
   return isRecord(value) && typeof value.id === "number" && typeof value.path === "string";
+}
+
+function compactRelease(value: unknown): ArrReleaseCandidate | undefined {
+  if (!isRecord(value) || typeof value.title !== "string" || typeof value.guid !== "string" || typeof value.indexerId !== "number") return undefined;
+  const rejections = stringList(value.rejections);
+  const blocklisted = rejections.some((reason) => /blocklist/i.test(reason));
+  const downloadAllowed = typeof value.downloadAllowed === "boolean" ? value.downloadAllowed : undefined;
+  const rejected = value.rejected === true || rejections.length > 0;
+  return {
+    title: value.title,
+    guid: value.guid,
+    indexerId: value.indexerId,
+    indexer: stringProperty(value, "indexer"),
+    protocol: stringProperty(value, "protocol"),
+    quality: qualityName(value.quality),
+    languages: namedValues(value.languages),
+    customFormats: namedValues(value.customFormats),
+    customFormatScore: numberProperty(value, "customFormatScore"),
+    size: numberProperty(value, "size"),
+    ageHours: numberProperty(value, "ageHours"),
+    seeders: numberProperty(value, "seeders"),
+    leechers: numberProperty(value, "leechers"),
+    fullSeason: typeof value.fullSeason === "boolean" ? value.fullSeason : undefined,
+    downloadAllowed,
+    rejected,
+    blocklisted,
+    cutoffOnly: rejections.length > 0 && rejections.every(isExistingFilePreferenceRejection),
+    requiresTargetOverride: downloadAllowed === false,
+    manualGrabEligible: !blocklisted,
+    rejections,
+  };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string") return item.trim() ? [item.trim()] : [];
+    if (!isRecord(item)) return [];
+    const message = [item.message, item.reason].find((candidate): candidate is string => typeof candidate === "string");
+    return message?.trim() ? [message.trim()] : [];
+  });
+}
+
+function namedValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => typeof item === "string" ? [item] : isRecord(item) && typeof item.name === "string" ? [item.name] : []);
+}
+
+function qualityName(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.name === "string") return value.name;
+  return isRecord(value.quality) && typeof value.quality.name === "string" ? value.quality.name : undefined;
+}
+
+function stringProperty(value: Record<string, unknown>, property: string): string | undefined {
+  return typeof value[property] === "string" ? value[property] : undefined;
+}
+
+function numberProperty(value: Record<string, unknown>, property: string): number | undefined {
+  return typeof value[property] === "number" ? value[property] : undefined;
+}
+
+function isExistingFilePreferenceRejection(reason: string): boolean {
+  return /existing file.*(?:meets cutoff|equal|higher|same|better)|not an upgrade/i.test(reason);
 }

@@ -164,3 +164,91 @@ test("manual import rejects overrides for unselected candidates", async () => {
     /overrides do not match selected IDs: 2/,
   );
 });
+
+test("Arr release pages preserve cutoff-only candidates and force grabs validate the target", async (t) => {
+  const requests: Array<{ method?: string; url?: string; body?: unknown }> = [];
+  const releases = Array.from({ length: 25 }, (_, index) => ({
+    title: index === 24 ? "The.White.Lotus.S02E04.1080p.WEBRip.H265-d3g" : `Filler.Release.${index}`,
+    guid: `guid-${index}`,
+    indexerId: 1,
+    indexer: "NZBgeek",
+    protocol: "usenet",
+    quality: { quality: { name: "WEBRip-1080p" } },
+    languages: [{ name: "English" }],
+    customFormats: [{ name: "English subtitles" }],
+    customFormatScore: 10,
+    size: 2_000_000_000 + index,
+    seeders: index + 1,
+    leechers: index + 2,
+    downloadAllowed: index !== 24,
+    rejected: true,
+    rejections: ["Existing file meets cutoff: WEB 1080p"],
+    verboseUnusedData: "x".repeat(1_000),
+  }));
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      requests.push({ method: request.method, url: request.url, body: body ? JSON.parse(body) : undefined });
+      response.setHeader("Content-Type", "application/json");
+      response.end(request.method === "POST" ? JSON.stringify({ queued: true }) : JSON.stringify(releases));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new ArrClient("sonarr", { url: `http://127.0.0.1:${address.port}`, apiKey: "test" });
+
+  const firstPage = await client.getEpisodeReleases(135158, { offset: 0, limit: 20, refresh: true });
+  const page = await client.getEpisodeReleases(135158, { offset: 20, limit: 10 });
+  assert.equal(JSON.stringify(releases).length > 12_000, true);
+  assert.equal(firstPage.hasMore, true);
+  assert.equal(requests.filter((request) => request.method === "GET").length, 1);
+  assert.deepEqual({ total: page.total, offset: page.offset, limit: page.limit, hasMore: page.hasMore }, { total: 25, offset: 20, limit: 10, hasMore: false });
+  assert.equal(page.candidates.length, 5);
+  const selected = page.candidates.at(-1)!;
+  assert.equal(selected.cutoffOnly, true);
+  assert.equal(selected.manualGrabEligible, true);
+  assert.equal(selected.requiresTargetOverride, true);
+  assert.equal(selected.leechers, 26);
+  assert.deepEqual(selected.rejections, ["Existing file meets cutoff: WEB 1080p"]);
+  assert.equal("verboseUnusedData" in selected, false);
+
+  await assert.rejects(
+    client.grabEpisodeRelease(135158, { guid: selected.guid, indexerId: selected.indexerId, title: selected.title, allowRejected: false }),
+    /allowRejected must be true/,
+  );
+  await assert.rejects(
+    client.grabEpisodeRelease(135158, { guid: selected.guid, indexerId: selected.indexerId, title: "Wrong title", allowRejected: true }),
+    /title changed/,
+  );
+  const grabbed = await client.grabEpisodeRelease(135158, {
+    guid: selected.guid,
+    indexerId: selected.indexerId,
+    title: selected.title,
+    allowRejected: true,
+  }) as { selectedRelease: { title: string }; result: { queued: boolean } };
+  assert.equal(grabbed.selectedRelease.title, selected.title);
+  assert.deepEqual(grabbed.result, { queued: true });
+  assert.deepEqual(requests.at(-1), {
+    method: "POST",
+    url: "/api/v3/release",
+    body: { guid: "guid-24", indexerId: 1, episodeId: 135158 },
+  });
+  assert.equal(requests.filter((request) => request.method === "POST").length, 1);
+});
+
+test("Arr accepts an empty successful JSON response", async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.statusCode = 200;
+    response.end(" \r\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const client = new ArrClient("sonarr", { url: `http://127.0.0.1:${address.port}`, apiKey: "test" });
+
+  assert.equal(await client.removeEpisodeFile(170568), undefined);
+});

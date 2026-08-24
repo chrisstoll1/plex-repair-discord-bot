@@ -170,6 +170,20 @@ type BlocklistToolParams = {
   itemIds?: number[];
 };
 
+type ReleasePageToolParams = {
+  offset?: number;
+  limit?: number;
+  refresh?: boolean;
+};
+
+type TargetedReleaseGrabToolParams = {
+  guid: string;
+  indexerId: number;
+  releaseTitle: string;
+  allowRejected: boolean;
+  confirmed?: boolean;
+};
+
 type ManualImportToolParams = {
   folder?: string;
   downloadId?: string;
@@ -693,7 +707,8 @@ export class PiAgentService {
   }
 
   private createTools(context: AgentRequestContext, toolNames?: readonly string[]) {
-    const clients = () => createMediaClients(this.store, this.logger);
+    const mediaClients = createMediaClients(this.store, this.logger);
+    const clients = () => mediaClients;
 
     const tools = [
       defineTool({
@@ -992,10 +1007,15 @@ export class PiAgentService {
       defineTool({
         name: "get_radarr_movie_releases",
         label: "Get Radarr movie releases",
-        description: "List available Radarr releases for an existing movie ID before selecting a release to grab.",
-        parameters: Type.Object({ movieId: Type.Number({ description: "Radarr movie ID" }) }),
-        execute: async (_toolCallId, params: { movieId: number }) => {
-          const results = await clients().radarr.getMovieReleases(params.movieId);
+        description: "Run an interactive Radarr release lookup and return a compact page. Results rejected only because the existing file meets cutoff remain manual-grab candidates. Continue with offset while hasMore is true before concluding no release exists.",
+        parameters: Type.Object({
+          movieId: Type.Number({ description: "Radarr movie ID" }),
+          offset: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based result offset, default 0" })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Results per page, default 20" })),
+          refresh: Type.Optional(Type.Boolean({ description: "Start a fresh release-search snapshot. Use on the first page after external state changes; later pages reuse that snapshot." })),
+        }),
+        execute: async (_toolCallId, params: { movieId: number } & ReleasePageToolParams) => {
+          const results = await clients().radarr.getMovieReleases(params.movieId, params);
           return toolResponse(results);
         },
       }),
@@ -1048,10 +1068,15 @@ export class PiAgentService {
       defineTool({
         name: "get_sonarr_episode_releases",
         label: "Get Sonarr episode releases",
-        description: "List available Sonarr releases for an existing episode ID before selecting a release to grab.",
-        parameters: Type.Object({ episodeId: Type.Number({ description: "Sonarr episode ID" }) }),
-        execute: async (_toolCallId, params: { episodeId: number }) => {
-          const results = await clients().sonarr.getEpisodeReleases(params.episodeId);
+        description: "Run an interactive Sonarr release lookup and return a compact page. Results rejected only because the existing file meets cutoff remain manual-grab candidates. Continue with offset while hasMore is true before concluding no release exists.",
+        parameters: Type.Object({
+          episodeId: Type.Number({ description: "Sonarr episode ID" }),
+          offset: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based result offset, default 0" })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Results per page, default 20" })),
+          refresh: Type.Optional(Type.Boolean({ description: "Start a fresh release-search snapshot. Use on the first page after external state changes; later pages reuse that snapshot." })),
+        }),
+        execute: async (_toolCallId, params: { episodeId: number } & ReleasePageToolParams) => {
+          const results = await clients().sonarr.getEpisodeReleases(params.episodeId, params);
           return toolResponse(results);
         },
       }),
@@ -1213,40 +1238,56 @@ export class PiAgentService {
       defineTool({
         name: "grab_radarr_release",
         label: "Grab Radarr release",
-        description: "Tell Radarr to grab a specific release returned by get_radarr_movie_releases. Requires confirmation when configured.",
+        description: "Force-grab a specific release returned by get_radarr_movie_releases while preserving the current movie file. The server re-runs the target movie lookup and validates the title, GUID, and indexer before submitting. Set allowRejected=true only after inspecting the exact rejection reasons. Requires confirmation when configured.",
         parameters: Type.Object({
+          movieId: Type.Number({ description: "Radarr movie ID used for the release lookup" }),
+          releaseTitle: Type.String({ description: "Exact title from the selected release result" }),
           guid: Type.String({ description: "Release guid from Radarr release results" }),
           indexerId: Type.Number({ description: "Indexer ID from Radarr release results" }),
+          allowRejected: Type.Boolean({ description: "True for an intentional manual grab of a rejected result, including an existing-file cutoff rejection" }),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
-        execute: async (_toolCallId, params: { guid: string; indexerId: number; confirmed?: boolean }) => {
+        execute: async (_toolCallId, params: { movieId: number } & TargetedReleaseGrabToolParams) => {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
-            action: `Grab Radarr release ${params.guid} from indexer ${params.indexerId}`,
+            action: `Grab Radarr release ${params.releaseTitle} guid=${params.guid} indexer=${params.indexerId} for movie ID ${params.movieId}${params.allowRejected ? " with inspected rejections overridden" : ""}`,
             confirmed: params.confirmed,
           });
           if (policy) return policy;
 
-          const results = await clients().radarr.grabRelease({ guid: params.guid, indexerId: params.indexerId });
+          const results = await clients().radarr.grabMovieRelease(params.movieId, {
+            guid: params.guid,
+            indexerId: params.indexerId,
+            title: params.releaseTitle,
+            allowRejected: params.allowRejected,
+          });
           return toolResponse(results);
         },
       }),
       defineTool({
         name: "grab_sonarr_release",
         label: "Grab Sonarr release",
-        description: "Tell Sonarr to grab a specific release returned by get_sonarr_episode_releases. Requires confirmation when configured.",
+        description: "Force-grab a specific release returned by get_sonarr_episode_releases while preserving the current episode file. The server re-runs the target episode lookup and validates the title, GUID, and indexer before submitting. Set allowRejected=true only after inspecting the exact rejection reasons. Requires confirmation when configured.",
         parameters: Type.Object({
+          episodeId: Type.Number({ description: "Sonarr episode ID used for the release lookup" }),
+          releaseTitle: Type.String({ description: "Exact title from the selected release result" }),
           guid: Type.String({ description: "Release guid from Sonarr release results" }),
           indexerId: Type.Number({ description: "Indexer ID from Sonarr release results" }),
+          allowRejected: Type.Boolean({ description: "True for an intentional manual grab of a rejected result, including an existing-file cutoff rejection" }),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
         }),
-        execute: async (_toolCallId, params: { guid: string; indexerId: number; confirmed?: boolean }) => {
+        execute: async (_toolCallId, params: { episodeId: number } & TargetedReleaseGrabToolParams) => {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
-            action: `Grab Sonarr release ${params.guid} from indexer ${params.indexerId}`,
+            action: `Grab Sonarr release ${params.releaseTitle} guid=${params.guid} indexer=${params.indexerId} for episode ID ${params.episodeId}${params.allowRejected ? " with inspected rejections overridden" : ""}`,
             confirmed: params.confirmed,
           });
           if (policy) return policy;
 
-          const results = await clients().sonarr.grabRelease({ guid: params.guid, indexerId: params.indexerId });
+          const results = await clients().sonarr.grabEpisodeRelease(params.episodeId, {
+            guid: params.guid,
+            indexerId: params.indexerId,
+            title: params.releaseTitle,
+            allowRejected: params.allowRejected,
+          });
           return toolResponse(results);
         },
       }),
@@ -1301,7 +1342,7 @@ export class PiAgentService {
       defineTool({
         name: "execute_radarr_manual_import",
         label: "Execute Radarr manual import",
-        description: "Execute the actual Radarr ManualImport command for IDs returned by preview_radarr_manual_import. Use the same filters, set auto mode for download-client imports, then poll the returned command ID and verify the movie file.",
+        description: "Execute the actual Radarr ManualImport command for IDs returned by preview_radarr_manual_import. For an intentional equal-quality replacement, preview and execute with filterExistingFiles=false rather than deleting the current file. Use the same filters, set auto mode for download-client imports, then poll the returned command ID and verify the movie file.",
         parameters: Type.Object({
           importIds: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1, description: "Manual import candidate IDs from preview_radarr_manual_import" }),
           folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
@@ -1327,7 +1368,7 @@ export class PiAgentService {
       defineTool({
         name: "execute_sonarr_manual_import",
         label: "Execute Sonarr manual import",
-        description: "Execute the actual Sonarr ManualImport command for IDs returned by preview_sonarr_manual_import. Use explicit overrides only when the candidate mapping was verified, set auto mode for download-client imports, then poll the command ID and verify episode files.",
+        description: "Execute the actual Sonarr ManualImport command for IDs returned by preview_sonarr_manual_import. For an intentional equal-quality replacement, preview and execute with filterExistingFiles=false rather than deleting the current file. Use explicit overrides only when the candidate mapping was verified, set auto mode for download-client imports, then poll the command ID and verify episode files.",
         parameters: Type.Object({
           importIds: Type.Array(Type.Integer({ minimum: 1 }), { minItems: 1, description: "Manual import candidate IDs from preview_sonarr_manual_import" }),
           folder: Type.Optional(Type.String({ description: "Same folder path used for preview" })),
@@ -1527,7 +1568,7 @@ export class PiAgentService {
       defineTool({
         name: "delete_sonarr_episode_file",
         label: "Delete Sonarr episode file",
-        description: "Delete only a specific Sonarr episode file from disk while keeping the series and episode in Sonarr. Use before searching for a replacement bad-audio episode. Requires confirmation when configured.",
+        description: "Delete only a specific Sonarr episode file from disk while keeping the series and episode in Sonarr. Never use deletion merely to bypass an existing-file cutoff rejection; force-grab the selected release and use scoped manual import instead. Use only for an explicit deletion request or a verified last resort after replacement media is available. Requires confirmation when configured.",
         parameters: Type.Object({
           episodeFileId: Type.Number({ description: "Sonarr episode file ID to delete" }),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
@@ -1547,7 +1588,7 @@ export class PiAgentService {
       defineTool({
         name: "delete_radarr_movie_file",
         label: "Delete Radarr movie file",
-        description: "Delete only a specific Radarr movie file from disk while keeping the movie in Radarr. Use before searching for a replacement bad-audio movie. Requires confirmation when configured.",
+        description: "Delete only a specific Radarr movie file from disk while keeping the movie in Radarr. Never use deletion merely to bypass an existing-file cutoff rejection; force-grab the selected release and use scoped manual import instead. Use only for an explicit deletion request or a verified last resort after replacement media is available. Requires confirmation when configured.",
         parameters: Type.Object({
           movieFileId: Type.Number({ description: "Radarr movie file ID to delete" }),
           confirmed: Type.Optional(Type.Boolean({ description: "True only when the user explicitly confirmed this exact action" })),
