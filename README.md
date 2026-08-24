@@ -82,7 +82,7 @@ For TrueNAS SCALE, use the same Compose configuration in a Custom App and replac
 2. Enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
 3. Enter the Discord application ID if you want the global `/health` slash command.
 4. Connect OpenAI Codex using the device-code panel.
-5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, and rename events.
+5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, rename, and manual-interaction-required events.
 6. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, and repair policy.
 7. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord and AI-auth status.
 8. Use `Ongoing Repairs` and `Agent Tasks` to inspect or manage retained operational data.
@@ -110,7 +110,7 @@ In a server, mention the bot with a request:
 
 The bot creates a public thread from the request. Messages from any participant in that active thread are included without another mention, and each Discord thread is constrained to one durable repair case. Each participant's current Discord roles are checked for repairs requested on their behalf. Separate issue threads can work concurrently.
 
-When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks are preferred over timed checks. Disabling a webhook integration converts affected waits to a delayed check.
+When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks resume work after successful imports or related manual-interaction events. A single two-hour watchdog check prevents a missed event from leaving a repair waiting indefinitely; disabling an integration converts affected waits to a shorter delayed check.
 
 ## Configuration and Data
 

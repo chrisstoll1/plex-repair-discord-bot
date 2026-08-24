@@ -120,6 +120,22 @@ test("inbound events match provider, event type, and media and are deduplicated"
   store.setWake(late.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "series:late" });
   assert.equal(store.get(late.id)?.status, "ready");
   assert.equal((store.latestActivity(late.id)?.details as { reason?: string }).reason, "recent_event");
+
+  const manualInteraction = store.create(caseParams("manual-interaction"));
+  store.setWake(manualInteraction.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:blocked" });
+  const blocked = store.receiveEvent({
+    provider: "sonarr",
+    eventId: "manual-interaction",
+    eventType: "manualinteractionrequired",
+    mediaIds: ["episode:blocked", "series:9"],
+  });
+  assert.deepEqual(blocked.matchedCaseIds, [manualInteraction.id]);
+  assert.equal(store.get(manualInteraction.id)?.status, "ready");
+
+  store.receiveEvent({ provider: "sonarr", eventId: "early-manual-interaction", eventType: "manualinteractionrequired", mediaId: "episode:early-blocked" });
+  const replayedManualInteraction = store.create(caseParams("replayed-manual-interaction"));
+  store.setWake(replayedManualInteraction.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:early-blocked" });
+  assert.equal(store.get(replayedManualInteraction.id)?.status, "ready");
 });
 
 test("multi-media waits resume only after all expected events and do not replay consumed events", (t) => {
@@ -139,6 +155,21 @@ test("multi-media waits resume only after all expected events and do not replay 
   assert.equal(store.get(repairCase.id)?.status, "waiting");
   assert.deepEqual(store.receiveEvent({ provider: "sonarr", eventId: "one-again", eventType: "download", mediaId: "episode:1" }).matchedCaseIds, []);
   assert.equal(store.get(repairCase.id)?.status, "waiting");
+
+  const blocked = store.create(caseParams("multi-episode-manual-interaction"));
+  store.setWake(blocked.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:4", "episode:5"], completionPolicy: "all" });
+  assert.deepEqual(store.receiveEvent({
+    provider: "sonarr",
+    eventId: "episode-four-needs-attention",
+    eventType: "manualinteractionrequired",
+    mediaId: "episode:4",
+  }).matchedCaseIds, [blocked.id]);
+  assert.equal(store.get(blocked.id)?.status, "ready");
+
+  store.receiveEvent({ provider: "sonarr", eventId: "early-episode-six-needs-attention", eventType: "manualinteractionrequired", mediaId: "episode:6" });
+  const replayedBlocked = store.create(caseParams("replayed-multi-episode-manual-interaction"));
+  store.setWake(replayedBlocked.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:6", "episode:7"], completionPolicy: "all" });
+  assert.equal(store.get(replayedBlocked.id)?.status, "ready");
 });
 
 test("service suppresses duplicate progress without adding idle messages", async (t) => {
@@ -162,14 +193,15 @@ test("service suppresses duplicate progress without adding idle messages", async
   await service.shutdown();
 });
 
-test("event waits have no timer, preserve webhook context, and convert when the provider is disabled", async (t) => {
+test("event waits have a two-hour watchdog, preserve webhook context, and convert when the provider is disabled", async (t) => {
   let now = new Date("2026-07-10T12:00:00.000Z");
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db, () => now);
   const repairCase = store.create(caseParams("webhook-resume"));
   store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   assert.equal(store.getWake(repairCase.id)?.type, "arr_event");
-  assert.equal(store.nextTimerDueAt(), undefined);
+  assert.equal(store.getWake(repairCase.id)?.type === "arr_event" ? store.getWake(repairCase.id).fallbackAt : undefined, "2026-07-10T14:00:00.000Z");
+  assert.equal(store.nextTimerDueAt(), "2026-07-10T14:00:00.000Z");
 
   let observedResume: unknown;
   const service = new RepairCaseService(store, {
@@ -196,6 +228,23 @@ test("event waits have no timer, preserve webhook context, and convert when the 
   assert.equal((store.latestActivity(disabled.id)?.details as { reason?: string }).reason, "timer");
 });
 
+test("legacy event waits receive an immediate watchdog without silently expiring", (t) => {
+  let now = new Date("2026-07-10T12:00:00.000Z");
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("legacy-event-wait"));
+  store.setWake(repairCase.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
+  db.prepare("UPDATE repair_case_wakes SET due_at = NULL WHERE case_id = ?").run(repairCase.id);
+
+  now = new Date("2026-07-18T12:00:00.000Z");
+  assert.equal(store.backfillEventFallbacks(), 1);
+  const wake = store.getWake(repairCase.id);
+  assert.equal(wake?.type === "arr_event" ? wake.fallbackAt : undefined, now.toISOString());
+  assert.equal(store.get(repairCase.id)?.expiresAt, "2026-07-25T12:00:00.000Z");
+  assert.deepEqual(store.claimDueTimers().map((item) => item.id), [repairCase.id]);
+  assert.equal((store.latestActivity(repairCase.id)?.details as { reason?: string }).reason, "webhook_fallback");
+});
+
 test("an event received during work reruns immediately without sending a stale waiting update", async (t) => {
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db);
@@ -217,6 +266,41 @@ test("an event received during work reruns immediately without sending a stale w
   assert.equal(runs, 2);
   assert.deepEqual(delivered, []);
   assert.equal(store.listActivity(repairCase.id).some((entry) => entry.details === "stale"), false);
+  await service.shutdown();
+});
+
+test("an event received while the waiting update is delivering still reruns the case", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("event-during-delivery"));
+  let runs = 0;
+  let releaseDelivery!: () => void;
+  let reportDeliveryStarted!: () => void;
+  const deliveryStarted = new Promise<void>((resolve) => { reportDeliveryStarted = resolve; });
+  const deliveryGate = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+  const service = new RepairCaseService(store, {
+    runner: async () => {
+      runs += 1;
+      return runs === 1
+        ? {
+            wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" },
+            deliveries: [{ kind: "discord_message", payload: "waiting" }],
+          }
+        : { status: "resolved" };
+    },
+    onDelivery: async () => {
+      reportDeliveryStarted();
+      await deliveryGate;
+    },
+  });
+  service.start();
+  await deliveryStarted;
+  assert.equal(store.get(repairCase.id)?.status, "waiting");
+  assert.deepEqual(service.receiveEvent({ provider: "sonarr", eventId: "completed", eventType: "download", mediaId: "episode:42" }).matchedCaseIds, [repairCase.id]);
+  assert.equal(store.get(repairCase.id)?.status, "ready");
+  releaseDelivery();
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.equal(runs, 2);
   await service.shutdown();
 });
 

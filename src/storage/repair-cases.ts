@@ -65,7 +65,7 @@ export type RepairCaseActivity = {
 
 export type RepairCaseWake =
   | { id?: number; caseId?: string; type: "timer"; dueAt: Date | string; createdAt?: string }
-  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; createdAt?: string };
+  | { id?: number; caseId?: string; type: "arr_event"; provider: string; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; fallbackAt?: Date | string; createdAt?: string };
 
 export type InboundArrEvent = {
   provider: string;
@@ -109,6 +109,8 @@ type WakeRow = {
 
 const TERMINAL: RepairCaseStatus[] = ["resolved", "exhausted", "cancelled"];
 const RUNNABLE: RepairCaseStatus[] = ["ready", "working", "verifying"];
+const ARR_EVENT_WATCHDOG_MS = 2 * 60 * 60_000;
+const CASE_LIFETIME_MS = 7 * 86_400_000;
 
 export class RepairCaseStore {
   constructor(private readonly db: AppDatabase, private readonly now: () => Date = () => new Date()) {}
@@ -118,7 +120,7 @@ export class RepairCaseStore {
     const now = this.timestamp();
     const maxAttempts = params.maxAttempts ?? 20;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1) throw new Error("maxAttempts must be a positive integer");
-    const expiresAt = params.expiresAt ? timestamp(params.expiresAt) : new Date(Date.parse(now) + 7 * 86_400_000).toISOString();
+    const expiresAt = params.expiresAt ? timestamp(params.expiresAt) : new Date(Date.parse(now) + CASE_LIFETIME_MS).toISOString();
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO repair_cases (
         id, status, guild_id, thread_id, source, user_id, authorization_actor, title, objective,
@@ -240,7 +242,7 @@ export class RepairCaseStore {
       const now = this.timestamp();
       const result = this.db.prepare(`UPDATE repair_cases SET status = 'ready', lease_owner = NULL, lease_expires_at = NULL,
         resolved_at = NULL, cancelled_at = NULL, attempts = 0, expires_at = ?, updated_at = ? WHERE id = ? AND status = ?`)
-        .run(new Date(Date.parse(now) + 7 * 86_400_000).toISOString(), now, id, current.status);
+        .run(new Date(Date.parse(now) + CASE_LIFETIME_MS).toISOString(), now, id, current.status);
       if (result.changes !== 1) return undefined;
       this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(id);
       this.insertActivity(id, "status_changed", actor, { from: current.status, to: "ready", reason: "new_thread_message" }, now);
@@ -296,35 +298,41 @@ export class RepairCaseStore {
         this.db.prepare("INSERT INTO repair_case_wakes (case_id, type, due_at, created_at) VALUES (?, 'timer', ?, ?)")
           .run(caseId, timestamp(wake.dueAt), now);
       } else {
+        const fallbackAt = timestamp(wake.fallbackAt ?? new Date(Date.parse(now) + ARR_EVENT_WATCHDOG_MS));
         const mediaIds = expectedWakeMediaIds(wake);
         const completionPolicy = wake.completionPolicy ?? "any";
-        this.db.prepare(`INSERT INTO repair_case_wakes (case_id, type, provider, event_type, media_id, media_ids_json, completion_policy, created_at)
-          VALUES (?, 'arr_event', ?, ?, ?, ?, ?, ?)`).run(caseId, wake.provider, wake.eventType ?? null, mediaIds[0] ?? null, json(mediaIds), completionPolicy, now);
+        this.db.prepare(`INSERT INTO repair_case_wakes (case_id, type, due_at, provider, event_type, media_id, media_ids_json, completion_policy, created_at)
+          VALUES (?, 'arr_event', ?, ?, ?, ?, ?, ?, ?)`).run(caseId, fallbackAt, wake.provider, wake.eventType ?? null, mediaIds[0] ?? null, json(mediaIds), completionPolicy, now);
       }
       this.transition(caseId, "waiting", { actor: "system", details: { wake: wake.type } });
       if (wake.type === "arr_event") {
         const wakeId = (this.db.prepare("SELECT id FROM repair_case_wakes WHERE case_id = ?").get(caseId) as { id: number }).id;
         const expected = expectedWakeMediaIds(wake);
         const recentEvents = this.db.prepare(`SELECT id, event_id, event_type, media_id, media_ids_json FROM repair_inbound_events event
-          WHERE provider = ? AND received_at >= ? AND (? IS NULL OR event_type = ?)
+          WHERE provider = ? AND received_at >= ?
+            AND (? IS NULL OR event_type = ? OR (? = 'download' AND event_type = 'manualinteractionrequired'))
             AND NOT EXISTS (SELECT 1 FROM repair_case_event_consumptions consumed WHERE consumed.case_id = ? AND consumed.inbound_event_id = event.id)
           ORDER BY received_at DESC LIMIT 50`).all(
           wake.provider,
           new Date(Date.parse(now) - 5 * 60_000).toISOString(),
           wake.eventType ?? null,
           wake.eventType ?? null,
+          wake.eventType ?? null,
           caseId,
         ) as Array<{ id: number; event_id: string; event_type: string; media_id: string | null; media_ids_json: string | null }>;
         let replayMatched = false;
+        let immediateAttentionMatched = false;
         for (const event of recentEvents) {
+          if (!eventTypesMatch(wake.eventType, event.event_type)) continue;
           const eventMediaIds = inboundMediaIds(event);
           if (!matchesExpectedMedia(expected, eventMediaIds)) continue;
           replayMatched = true;
+          immediateAttentionMatched ||= requiresImmediateAttention(event.event_type);
           this.db.prepare("INSERT OR IGNORE INTO repair_case_event_consumptions (case_id, inbound_event_id, wake_id, consumed_at) VALUES (?, ?, ?, ?)")
             .run(caseId, event.id, wakeId, now);
         }
         const observed = this.consumedMediaIds(caseId, wakeId);
-        if (replayMatched && wakeSatisfied(expected, observed, wake.completionPolicy ?? "any")) {
+        if (replayMatched && (immediateAttentionMatched || wakeSatisfied(expected, observed, wake.completionPolicy ?? "any"))) {
           this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(caseId);
           this.transition(caseId, "ready", { from: ["waiting"], actor: "event-replay", details: { reason: "recent_event", provider: wake.provider, eventType: wake.eventType, mediaIds: observed } });
         }
@@ -339,7 +347,7 @@ export class RepairCaseStore {
   }
 
   nextTimerDueAt(): string | undefined {
-    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE type = 'timer' AND due_at IS NOT NULL").get() as { due_at: string | null }).due_at ?? undefined;
+    return (this.db.prepare("SELECT MIN(due_at) AS due_at FROM repair_case_wakes WHERE due_at IS NOT NULL").get() as { due_at: string | null }).due_at ?? undefined;
   }
 
   nextDeliveryDueAt(): string | undefined {
@@ -351,16 +359,39 @@ export class RepairCaseStore {
   claimDueTimers(limit = 100, now: Date | string = this.now()): RepairCase[] {
     return this.db.transaction(() => {
       const at = timestamp(now);
-      const rows = this.db.prepare(`SELECT w.case_id, w.type FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
-        WHERE w.type = 'timer' AND w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
-        .all(at, Math.max(1, limit)) as Array<{ case_id: string; type: RepairCaseWake["type"] }>;
+      const rows = this.db.prepare(`SELECT w.* FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
+        WHERE w.due_at <= ? AND c.status = 'waiting' ORDER BY w.due_at, w.id LIMIT ?`)
+        .all(at, Math.max(1, limit)) as WakeRow[];
       const cases: RepairCase[] = [];
       for (const row of rows) {
         this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ?").run(row.case_id);
-        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer", details: { reason: "timer" } });
+        const details = row.type === "arr_event"
+          ? { reason: "webhook_fallback", provider: row.provider, eventType: row.event_type, mediaIds: wakeRowMediaIds(row) }
+          : { reason: "timer" };
+        const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: "timer", details });
         if (resumed) cases.push(resumed);
       }
       return cases;
+    })();
+  }
+
+  backfillEventFallbacks(now: Date | string = this.now()): number {
+    return this.db.transaction(() => {
+      const at = timestamp(now);
+      const rows = this.db.prepare(`SELECT w.id, w.case_id, w.created_at, c.expires_at FROM repair_case_wakes w
+        JOIN repair_cases c ON c.id = w.case_id
+        WHERE w.type = 'arr_event' AND w.due_at IS NULL AND c.status = 'waiting'`).all() as Array<{
+          id: number; case_id: string; created_at: string; expires_at: string;
+        }>;
+      for (const row of rows) {
+        const dueAt = new Date(Math.max(Date.parse(row.created_at) + ARR_EVENT_WATCHDOG_MS, Date.parse(at))).toISOString();
+        this.db.prepare("UPDATE repair_case_wakes SET due_at = ? WHERE id = ? AND due_at IS NULL").run(dueAt, row.id);
+        if (row.expires_at <= at) {
+          this.db.prepare("UPDATE repair_cases SET expires_at = ?, updated_at = ? WHERE id = ? AND status = 'waiting'")
+            .run(new Date(Date.parse(at) + CASE_LIFETIME_MS).toISOString(), at, row.case_id);
+        }
+      }
+      return rows.length;
     })();
   }
 
@@ -395,16 +426,17 @@ export class RepairCaseStore {
       const inboundEventId = Number(inserted.lastInsertRowid);
       const rows = this.db.prepare(`SELECT w.* FROM repair_case_wakes w JOIN repair_cases c ON c.id = w.case_id
         WHERE w.type = 'arr_event' AND c.status = 'waiting' AND w.provider = ?
-          AND (w.event_type IS NULL OR w.event_type = ?)
-        ORDER BY w.id`).all(event.provider, event.eventType) as WakeRow[];
+          AND (w.event_type IS NULL OR w.event_type = ? OR (w.event_type = 'download' AND ? = 'manualinteractionrequired'))
+        ORDER BY w.id`).all(event.provider, event.eventType, event.eventType) as WakeRow[];
       const matchedCaseIds: string[] = [];
       for (const row of rows) {
+        if (!eventTypesMatch(row.event_type ?? undefined, event.eventType)) continue;
         const expected = wakeRowMediaIds(row);
         if (!matchesExpectedMedia(expected, mediaIds)) continue;
         this.db.prepare("INSERT OR IGNORE INTO repair_case_event_consumptions (case_id, inbound_event_id, wake_id, consumed_at) VALUES (?, ?, ?, ?)")
           .run(row.case_id, inboundEventId, row.id, receivedAt);
         const observed = this.consumedMediaIds(row.case_id, row.id);
-        if (!wakeSatisfied(expected, observed, row.completion_policy ?? "any")) continue;
+        if (!requiresImmediateAttention(event.eventType) && !wakeSatisfied(expected, observed, row.completion_policy ?? "any")) continue;
         this.db.prepare("DELETE FROM repair_case_wakes WHERE case_id = ? AND type = 'arr_event'").run(row.case_id);
         const resumed = this.transition(row.case_id, "ready", { from: ["waiting"], actor: `${event.provider}:${event.eventId}`, details: { provider: event.provider, eventType: event.eventType, mediaIds: observed } });
         if (resumed) matchedCaseIds.push(row.case_id);
@@ -551,7 +583,7 @@ function wakeFromRow(row: WakeRow): RepairCaseWake {
     ? { id: row.id, caseId: row.case_id, type: "timer", dueAt: row.due_at!, createdAt: row.created_at }
     : { id: row.id, caseId: row.case_id, type: "arr_event", provider: row.provider!, eventType: row.event_type ?? undefined,
       mediaId: row.media_id ?? undefined, mediaIds: wakeRowMediaIds(row), completionPolicy: row.completion_policy ?? "any",
-      createdAt: row.created_at };
+      fallbackAt: row.due_at ?? undefined, createdAt: row.created_at };
 }
 function outboxFromRow(row: OutboxRow): RepairCaseOutboxItem {
   return { id: row.id, caseId: row.case_id, kind: row.kind, payload: parseJson(row.payload_json), dedupeKey: row.dedupe_key ?? undefined,
@@ -578,6 +610,14 @@ function inboundMediaIds(row: { media_id: string | null; media_ids_json: string 
 
 function matchesExpectedMedia(expected: string[], observed: string[]): boolean {
   return expected.length === 0 || expected.some((mediaId) => observed.includes(mediaId));
+}
+
+function eventTypesMatch(expected: string | undefined, observed: string): boolean {
+  return !expected || expected === observed || (expected === "download" && observed === "manualinteractionrequired");
+}
+
+function requiresImmediateAttention(eventType: string): boolean {
+  return eventType === "manualinteractionrequired";
 }
 
 function wakeSatisfied(expected: string[], observed: string[], policy: "any" | "all"): boolean {

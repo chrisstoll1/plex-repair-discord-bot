@@ -296,7 +296,7 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
     status: repairCase.status,
     title: repairCase.title,
     latestUpdate: latestText,
-    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : undefined,
+    nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : wake?.fallbackAt ? String(wake.fallbackAt) : undefined,
     threadUrl: repairCase.guildId ? `https://discord.com/channels/${repairCase.guildId}/${repairCase.threadId}` : undefined,
     createdAt: repairCase.createdAt,
     updatedAt: repairCase.updatedAt,

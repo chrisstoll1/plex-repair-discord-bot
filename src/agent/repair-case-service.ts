@@ -72,6 +72,7 @@ export class RepairCaseService {
   }
 
   recover(): number {
+    this.store.backfillEventFallbacks();
     this.store.expireCases();
     const recovered = this.store.recoverAllLeases();
     this.store.recoverClaimedDeliveries();
@@ -320,7 +321,7 @@ export class RepairCaseService {
         }
       }
       this.controllers.delete(id);
-      if (runAgain && !this.stopping) this.enqueue(id);
+      if (!this.stopping && (runAgain || this.store.get(id)?.status === "ready")) this.enqueue(id);
       void this.flushDeliveries();
       this.scheduleWake();
     }
@@ -399,8 +400,11 @@ function resumeContext(activity: ReturnType<RepairCaseStore["latestActivity"]>):
   if (activity?.kind !== "status_changed" || !activity.details || typeof activity.details !== "object") return undefined;
   const details = activity.details as { to?: string; provider?: string; eventType?: string; mediaIds?: string[]; reason?: string };
   if (details.to !== "ready") return undefined;
+  if (details.reason === "webhook_fallback" || details.reason === "timer") {
+    return { source: "timer", provider: details.provider, eventType: details.eventType, mediaIds: details.mediaIds };
+  }
   if (details.eventType) {
     return { source: "webhook", provider: details.provider ?? activity.actor?.split(":", 1)[0], eventType: details.eventType, mediaIds: details.mediaIds };
   }
-  return details.reason === "timer" ? { source: "timer" } : undefined;
+  return undefined;
 }
