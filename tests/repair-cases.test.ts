@@ -416,6 +416,25 @@ test("a new thread message reopens a completed repair without another mention", 
   await service.shutdown();
 });
 
+test("runner failures retain provider diagnostics in repair activity without exposing them to Discord", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("provider-failure"));
+  const error = "AI request failed (openai-codex/gpt-5.5): Usage limit reached. Try again later.";
+  const delivered: unknown[] = [];
+  const service = new RepairCaseService(store, {
+    runner: async () => { throw new Error(error); },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  t.after(() => service.shutdown());
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "blocked" && delivered.length === 1);
+  const failure = store.listActivity(repairCase.id).find((entry) => entry.kind === "status_changed" && (entry.details as { to?: string }).to === "blocked");
+  assert.equal((failure?.details as { error?: string }).error, error);
+  assert.equal(store.get(repairCase.id)?.attempts, 1);
+  assert.doesNotMatch(JSON.stringify(delivered), /Usage limit|openai-codex/);
+});
+
 test("a follow-up interrupts stale running work and reruns with the new message", async (t) => {
   const { db } = openFixture(t);
   const store = new RepairCaseStore(db);

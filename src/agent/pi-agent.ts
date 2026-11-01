@@ -8,6 +8,7 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
+  type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AppConfig } from "../config.js";
@@ -103,6 +104,24 @@ export function resolveConfiguredModel(
   const model = modelRegistry.find(provider, modelId);
   if (!model) throw new Error(`Configured AI model is unavailable: ${provider}/${modelId}`);
   return model;
+}
+
+export function readAgentSessionResponse(session: Pick<AgentSession, "messages">, allowEmptyResponse = false): string {
+  const messages = session.messages.filter((message) => message.role === "assistant");
+  const last = messages.at(-1);
+  // Pi resolves prompt() after provider failures. The error lives on the final
+  // assistant message, including after automatic retries have been exhausted.
+  if (last?.stopReason === "error" || last?.stopReason === "aborted") {
+    const reason = last.errorMessage?.trim() || (last.stopReason === "aborted" ? "Request was aborted" : "Provider returned an error without details");
+    throw new Error(`AI request failed (${last.provider}/${last.model}): ${reason}`);
+  }
+  const response = messages
+    .filter((message) => message.stopReason !== "error" && message.stopReason !== "aborted")
+    .flatMap((message) => message.content.flatMap((block) => block.type === "text" ? [block.text] : []))
+    .join("")
+    .trim();
+  if (!response && !allowEmptyResponse) throw new Error("Agent session completed without a response");
+  return response;
 }
 
 type StartManyToolAgentsParams = {
@@ -427,7 +446,6 @@ export class PiAgentService {
     });
     await loader.reload();
 
-    let output = "";
     const { session } = await createAgentSession({
       cwd: process.cwd(),
       agentDir: this.config.piAgentDir,
@@ -449,22 +467,20 @@ export class PiAgentService {
       return applyOpenAiCodexServiceTier(transformedPayload, requestModel.provider, settings.ai.serviceTier);
     };
 
-    const unsubscribe = session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        output += event.assistantMessageEvent.delta;
-      }
-    });
     const abortSession = () => void session.abort().catch((error: unknown) => this.logger?.warn({ error }, "Failed to abort Pi agent session"));
     params.signal?.addEventListener("abort", abortSession, { once: true });
 
     try {
       if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
       await session.prompt(params.prompt);
-      const response = output.trim();
-      if (!response && !params.allowEmptyResponse) throw new Error("Agent session completed without a response");
-      return response;
+      if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
+      return readAgentSessionResponse(session, params.allowEmptyResponse);
+    } catch (error) {
+      if (!params.signal?.aborted) {
+        this.logger?.error({ err: error, modelProvider: model?.provider, modelId: model?.id }, "AI agent session failed");
+      }
+      throw error;
     } finally {
-      unsubscribe();
       params.signal?.removeEventListener("abort", abortSession);
       try {
         if (session.isStreaming) await session.abort();
