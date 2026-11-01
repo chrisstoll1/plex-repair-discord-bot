@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../src/config.js";
 import { RepairCaseService } from "../src/agent/repair-case-service.js";
+import { ModelUnavailableError } from "../src/agent/model-errors.js";
 import { openDatabase, type AppDatabase } from "../src/storage/db.js";
 import { RepairCaseStore, type CreateRepairCase } from "../src/storage/repair-cases.js";
 
@@ -414,6 +415,48 @@ test("a new thread message reopens a completed repair without another mention", 
   assert.equal(store.listMessages(repairCase.id).at(-1)?.sourceMessageId, "follow-up");
   assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "status_changed" && (entry.details as { reason?: string }).reason === "new_thread_message"), true);
   await service.shutdown();
+});
+
+test("runner failures retain provider diagnostics in repair activity without exposing them to Discord", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("provider-failure"));
+  const error = "AI request failed (openai-codex/gpt-5.5): Usage limit reached. Try again later.";
+  const delivered: unknown[] = [];
+  const service = new RepairCaseService(store, {
+    runner: async () => { throw new Error(error); },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  t.after(() => service.shutdown());
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "blocked" && delivered.length === 1);
+  const failure = store.listActivity(repairCase.id).find((entry) => entry.kind === "status_changed" && (entry.details as { to?: string }).to === "blocked");
+  assert.equal((failure?.details as { error?: string }).error, error);
+  assert.equal(store.get(repairCase.id)?.attempts, 1);
+  assert.doesNotMatch(JSON.stringify(delivered), /Usage limit|openai-codex/);
+  assert.doesNotMatch(JSON.stringify(delivered), /configured AI model is not available|ask your admin/);
+});
+
+test("unavailable models deliver admin guidance without another AI call and retain diagnostics", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("unavailable-model"));
+  const error = "AI request failed (openai-codex/gpt-5.5): model_not_found; private provider details";
+  const delivered: unknown[] = [];
+  let statusCalls = 0;
+  const service = new RepairCaseService(store, {
+    runner: async () => { throw new ModelUnavailableError(error); },
+    onSystemEvent: async () => { statusCalls += 1; throw new Error("AI is unavailable"); },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  t.after(() => service.shutdown());
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "blocked" && delivered.length === 1);
+  assert.deepEqual(delivered, [{ content: "The configured AI model is not available. Please ask your admin to select an available model in Bot Settings, then send another message here to retry this repair." }]);
+  assert.equal(statusCalls, 0);
+  assert.equal(store.get(repairCase.id)?.attempts, 1);
+  const failure = store.listActivity(repairCase.id).find((entry) => entry.kind === "status_changed" && (entry.details as { to?: string }).to === "blocked");
+  assert.deepEqual(failure?.details, { from: "working", to: "blocked", error, errorCode: "model_unavailable" });
 });
 
 test("a follow-up interrupts stale running work and reruns with the new message", async (t) => {

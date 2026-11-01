@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Logger } from "pino";
+import { ModelUnavailableError } from "./model-errors.js";
 import {
   RepairCaseStore,
   type InboundArrEvent,
@@ -305,7 +306,10 @@ export class RepairCaseService {
         this.store.releaseLease(id, this.ownerId, "ready");
         runAgain = true;
       } else if (!controller.signal.aborted) {
-        const details = { error: error instanceof Error ? error.message : String(error) };
+        const details = {
+          error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof ModelUnavailableError ? { errorCode: "model_unavailable" } : {}),
+        };
         this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details });
         await this.reportSystemEvent(this.store.get(id)!, { type: "runner_error", details }, `${id}:attempt:${current.attempts}:error`);
       }
@@ -344,7 +348,7 @@ export class RepairCaseService {
   }
 
   private async reportSystemEvent(repairCase: RepairCase, event: RepairCaseSystemEvent, dedupeKey: string): Promise<void> {
-    let content = event.type === "timeout_continuing" ? undefined : fallbackSystemMessage(event.type);
+    let content = event.type === "timeout_continuing" ? undefined : fallbackSystemMessage(event);
     if (!content) {
       try {
         content = (await this.options.onSystemEvent?.(repairCase, event))?.trim();
@@ -352,7 +356,7 @@ export class RepairCaseService {
         this.options.logger?.warn({ error, caseId: repairCase.id, event: event.type }, "Failed to generate repair case status update");
       }
     }
-    content ||= fallbackSystemMessage(event.type);
+    content ||= fallbackSystemMessage(event);
     this.store.addActivity(repairCase.id, "user_update", { message: content, event: event.type }, this.ownerId);
     this.store.enqueueDelivery(repairCase.id, "discord_message", { content }, { dedupeKey });
   }
@@ -390,7 +394,10 @@ export class RepairCaseService {
   }
 }
 
-function fallbackSystemMessage(type: RepairCaseSystemEvent["type"]): string {
+function fallbackSystemMessage({ type, details }: RepairCaseSystemEvent): string {
+  if (type === "runner_error" && details && typeof details === "object" && "errorCode" in details && details.errorCode === "model_unavailable") {
+    return "The configured AI model is not available. Please ask your admin to select an available model in Bot Settings, then send another message here to retry this repair.";
+  }
   if (type === "timeout_continuing") return "This is taking longer than expected, but I’m continuing automatically and will update you when I have a useful result.";
   if (type === "attempts_exhausted") return "I couldn’t complete this repair after several attempts. Please add any new details here and I can try again.";
   return "I hit an unexpected problem and stopped this repair safely. Add a message here if you’d like me to try again.";
