@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { ModelUnavailableError } from "../src/agent/model-errors.js";
 import { applyOpenAiCodexServiceTier, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel } from "../src/agent/pi-agent.js";
 
 test("priority service tier is added only to OpenAI Codex payloads", () => {
@@ -24,7 +25,7 @@ test("explicitly configured models cannot silently fall back", () => {
   assert.equal(resolveConfiguredModel(registry as never, "openai-codex", ""), undefined);
   assert.throws(
     () => resolveConfiguredModel(registry as never, "openai-codex", "missing"),
-    /Configured AI model is unavailable: openai-codex\/missing/,
+    { name: "ModelUnavailableError", message: "Configured AI model is unavailable: openai-codex/missing" },
   );
 });
 
@@ -56,6 +57,18 @@ test("partial text cannot hide a final provider failure or cancellation", () => 
   for (const stopReason of ["error", "aborted"] as const) {
     assert.throws(() => readAgentSessionResponse({ messages: [partial, assistant({ stopReason })] }, true), /AI request failed/);
   }
+});
+
+test("model rejections are propagated as typed failures with original diagnostics", () => {
+  const reason = "The model `gpt-5.5` does not exist or you do not have access to it.";
+  assert.throws(
+    () => readAgentSessionResponse({ messages: [assistant({ stopReason: "error", errorMessage: reason })] }, true),
+    (error: unknown) => error instanceof ModelUnavailableError && error.message.endsWith(reason),
+  );
+  assert.throws(
+    () => readAgentSessionResponse({ messages: [assistant({ stopReason: "error", errorMessage: "Usage limit reached" })] }, true),
+    (error: unknown) => error instanceof Error && !(error instanceof ModelUnavailableError),
+  );
 });
 
 test("a successful retry excludes text from failed attempts", () => {
