@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci
 COPY frontend/package*.json ./frontend/
 RUN npm --prefix frontend ci
@@ -24,6 +25,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 
