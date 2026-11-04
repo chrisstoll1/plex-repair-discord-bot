@@ -204,10 +204,19 @@ configuration becomes active when `.github/dependabot.yml` reaches GitHub's
 default branch.
 
 Update PRs run typechecking, tests, and a Docker build without publishing an
-image. Review `scripts/patch-pi-streaming.mjs` on each Pi upgrade: its version
-guard intentionally blocks installation until the streaming safety mitigation
-has been reviewed for the new SDK. Merging updates and restarting production
-remain manual. Catalog updates do not change the bot's selected model.
+image. The application keeps a 64 KB tool-argument limit on top of Pi's
+incremental streaming parser. Unknown SDK source layouts fail installation;
+streaming and authentication regression tests must pass before an update merges.
+
+After successful Container validation, a workflow from the trusted default
+branch automatically merges same-repository Dependabot PRs that change only
+`package.json` and `package-lock.json`, with Pi as the only manifest change.
+It checks the exact validated commit and GitHub's required `build` check.
+Failed, stale, draft, forked, or mixed updates require manual intervention.
+The workflow explicitly dispatches Container after merging so the new image is
+published even though GitHub's workflow token does not trigger push workflows.
+Production restarts remain manual. Catalog updates do not change the bot's
+selected model.
 
 ## License
 

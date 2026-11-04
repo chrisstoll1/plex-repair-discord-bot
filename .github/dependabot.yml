@@ -12,5 +12,5 @@ updates:
       - dependency-name: "@earendil-works/pi-coding-agent"
     versioning-strategy: "increase"
     open-pull-requests-limit: 1
-    # Pi upgrades must also review scripts/patch-pi-streaming.mjs.
-    # The install step intentionally fails until that safety patch is reviewed.
+    # Unknown SDK source layouts fail installation; streaming regression tests
+    # and the required build check gate automatic merging.

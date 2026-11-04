@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import type { Logger } from "pino";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
   ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
@@ -426,8 +426,11 @@ export class PiAgentService {
     fs.mkdirSync(this.config.piAgentDir, { recursive: true });
 
     const settings = readRuntimeSettings(this.store);
-    const authStorage = AuthStorage.create(`${this.config.piAgentDir}/auth.json`);
-    const modelRegistry = ModelRegistry.create(authStorage, `${this.config.piAgentDir}/models.json`);
+    const modelRuntime = await ModelRuntime.create({
+      authPath: `${this.config.piAgentDir}/auth.json`,
+      modelsPath: `${this.config.piAgentDir}/models.json`,
+    });
+    const modelRegistry = new ModelRegistry(modelRuntime);
     const model = resolveConfiguredModel(modelRegistry, settings.ai.modelProvider, settings.ai.modelId);
 
     const settingsManager = SettingsManager.inMemory({
@@ -452,8 +455,7 @@ export class PiAgentService {
     const { session } = await createAgentSession({
       cwd: process.cwd(),
       agentDir: this.config.piAgentDir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       model,
       thinkingLevel: params.thinkingLevel ?? settings.ai.thinkingLevel,
       noTools: "all",
