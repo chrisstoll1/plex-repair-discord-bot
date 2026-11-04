@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { ModelUnavailableError } from "../src/agent/model-errors.js";
+import { AiAuthenticationError, ModelUnavailableError } from "../src/agent/model-errors.js";
 import { applyOpenAiCodexServiceTier, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel } from "../src/agent/pi-agent.js";
 
 test("priority service tier is added only to OpenAI Codex payloads", () => {
@@ -77,6 +77,19 @@ test("a successful retry excludes text from failed attempts", () => {
     assistant({ content: [{ type: "text", text: "Library checked successfully." }] }),
   ] });
   assert.equal(response, "Library checked successfully.");
+});
+
+test("expired AI login overrides partial text and becomes an actionable typed failure", () => {
+  const reason = "Your authentication token has expired. Please try refreshing it.";
+  const partial = assistant({ content: [{ type: "text", text: "Checking your library." }], stopReason: "toolUse" });
+  assert.throws(
+    () => readAgentSessionResponse({ messages: [partial, assistant({ stopReason: "error", errorMessage: reason })] }, true),
+    (error: unknown) => error instanceof AiAuthenticationError && error.message === `AI request failed (openai-codex/gpt-5.5): ${reason}`,
+  );
+  assert.throws(
+    () => readAgentSessionResponse({ messages: [assistant({ stopReason: "aborted", errorMessage: reason })] }, true),
+    (error: unknown) => error instanceof Error && !(error instanceof AiAuthenticationError),
+  );
 });
 
 test("valid tool-only lifecycle responses remain allowed while other empty responses fail", () => {
