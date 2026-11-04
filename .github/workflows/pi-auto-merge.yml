@@ -1,0 +1,42 @@
+name: Pi update auto-merge
+
+on:
+  pull_request_target:
+    branches: [master]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      # Do not check out or execute PR code in this privileged workflow.
+      - name: Read Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@d7267f607e9d3fb96fc2fbe83e0af444713e90b7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Enable auto-merge for Pi updates
+        if: steps.metadata.outputs.dependency-names == '@earendil-works/pi-coding-agent'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Only the manifest and lockfile belong in an automated Pi update.
+          gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files" --jq '.[].filename' > changed-files.txt
+          if grep -qvE '^(package.json|package-lock.json)$' changed-files.txt; then
+            echo "Additional files changed; manual merge required."
+            exit 0
+          fi
+          # The required build check on master gates the eventual merge.
+          gh pr merge "$PR_URL" --auto --squash --match-head-commit "$HEAD_SHA"

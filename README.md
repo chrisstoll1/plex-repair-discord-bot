@@ -206,8 +206,10 @@ default branch.
 Update PRs run typechecking, tests, and a Docker build without publishing an
 image. Review `scripts/patch-pi-streaming.mjs` on each Pi upgrade: its version
 guard intentionally blocks installation until the streaming safety mitigation
-has been reviewed for the new SDK. Merging updates and restarting production
-remain manual. Catalog updates do not change the bot's selected model.
+has been reviewed for the new SDK. Dependabot PRs that update only Pi's manifest
+and lockfile are eligible for auto-merge after the required `build` check passes.
+PRs that change other files need manual merging. Production restarts remain
+manual. Catalog updates do not change the bot's selected model.
 
 ## License
 
