@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "master"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    allow:
+      - dependency-name: "@earendil-works/pi-coding-agent"
+    versioning-strategy: "increase"
+    open-pull-requests-limit: 1
+    # Pi upgrades must also review scripts/patch-pi-streaming.mjs.
+    # The install step intentionally fails until that safety patch is reviewed.

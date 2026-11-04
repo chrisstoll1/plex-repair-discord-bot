@@ -195,6 +195,20 @@ Vite proxies `/api` to the API on port `3000`. To run the local development cont
 docker compose up --build
 ```
 
+### Weekly model catalog updates
+
+Dependabot checks `@earendil-works/pi-coding-agent` for updates every Monday at
+09:00 America/New_York and opens an update PR against `master`. Pi supplies the
+bot's built-in model catalog, so available models follow Pi releases. This
+configuration becomes active when `.github/dependabot.yml` reaches GitHub's
+default branch.
+
+Update PRs run typechecking, tests, and a Docker build without publishing an
+image. Review `scripts/patch-pi-streaming.mjs` on each Pi upgrade: its version
+guard intentionally blocks installation until the streaming safety mitigation
+has been reviewed for the new SDK. Merging updates and restarting production
+remain manual. Catalog updates do not change the bot's selected model.
+
 ## License
 
 Plex Repairman is available under the [MIT License](LICENSE).
