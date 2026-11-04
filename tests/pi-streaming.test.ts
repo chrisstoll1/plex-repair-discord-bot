@@ -12,13 +12,25 @@ import { openDatabase } from "../src/storage/db.js";
 import type { AppConfig } from "../src/config.js";
 
 const piAiDist = path.join(piAiPackageDir, "dist");
-const { parseStreamingJson } = await import(pathToFileURL(path.join(piAiDist, "utils/json-parse.js")).href);
+const { parseStreamingJson, parseToolCallArguments } = await import(pathToFileURL(path.join(piAiDist, "utils/json-parse.js")).href);
+const { ToolCallArgumentsStream } = await import(pathToFileURL(path.join(piAiDist, "utils/streaming-json.js")).href);
 
 test("Pi rejects oversized tool arguments before attempting JSON repair", () => {
   for (const input of [JSON.stringify({ value: "x".repeat(65_536) }), '{"value":"' + "x".repeat(65_536), '{"checkpoint":"complete"' + " ".repeat(65_536)]) {
     assert.throws(() => parseStreamingJson(input), /Tool call arguments exceeded the 65536 character safety limit/);
   }
   assert.deepEqual(parseStreamingJson('{"value":"normal"}'), { value: "normal" });
+});
+
+test("tool argument limits cover initial, replacement and final payloads", () => {
+  const oversized = '{"value":"' + "x".repeat(65_536);
+  assert.throws(() => parseToolCallArguments(oversized), /65536 character safety limit/);
+  const stream = new ToolCallArgumentsStream();
+  stream.append('{"value":"');
+  assert.throws(() => stream.append("x".repeat(65_536)), /65536 character safety limit/);
+  assert.throws(() => stream.replace(oversized), /65536 character safety limit/);
+  stream.replace('{"value":"normal"}');
+  assert.deepEqual(stream.finish(), { arguments: { value: "normal" } });
 });
 
 test("a runaway Codex tool stream fails promptly and leaves HTTP and timers responsive", async () => {

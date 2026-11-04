@@ -2,14 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { piAiPackageDir } from "./pi-ai-package.mjs";
 
-// Temporary, version-checked mitigation for https://github.com/earendil-works/pi/issues/9265.
-// A runaway finish_repair_case call grew past 1.49M characters in production;
-// reparsing every 128-character delta starved health checks and cancellation.
-// Revisit this patch when upgrading Pi. Do not silently ship an unpatched SDK.
+// Pi now parses streaming JSON incrementally (upstream issue #9265). Keep our
+// application argument-size limit, checking the SDK's source structure rather
+// than pinning a version. Unknown layouts fail installation; regression tests
+// exercise the real Codex stream before an SDK update can auto-merge.
 const manifest = JSON.parse(fs.readFileSync(path.join(piAiPackageDir, "package.json"), "utf8"));
-if (manifest.version !== "0.80.7") {
-  throw new Error(`Review the streaming safety patch before upgrading pi-ai (${manifest.version})`);
-}
 
 const guard = `// Plex Repairman: bound provider-controlled work before any JSON parsing/repair.
 export function assertToolCallArgumentSize(length) {
@@ -23,21 +20,17 @@ const patches = [
   {
     file: "utils/json-parse.js",
     replacements: [
+      ["export function parseToolCallArguments(json) {", "export function parseToolCallArguments(json) {\n    assertToolCallArgumentSize(json?.length ?? 0);"],
       ["export function parseStreamingJson(partialJson) {", `${guard}export function parseStreamingJson(partialJson) {
     assertToolCallArgumentSize(partialJson?.length ?? 0);`],
     ],
   },
   {
-    file: "api/openai-responses-shared.js",
+    file: "utils/streaming-json.js",
     replacements: [
-      ['import { parseStreamingJson } from "../utils/json-parse.js";', 'import { assertToolCallArgumentSize, parseStreamingJson } from "../utils/json-parse.js";'],
-      ['        if (item.type === "function_call") {', `        if (item.type === "function_call") {
-            assertToolCallArgumentSize((item.arguments || "").length);`],
-      [`            slot.block.partialJson += event.delta;
-            slot.block.arguments = parseStreamingJson(slot.block.partialJson);`, `            assertToolCallArgumentSize(slot.block.partialJson.length + event.delta.length);
-            slot.block.partialJson += event.delta;
-            // Repairman consumes arguments only after toolcall_end. Parsing every
-            // growing prefix is quadratic and can prevent even abort timers firing.`],
+      ['import { parseToolCallArguments } from "./json-parse.js";', 'import { assertToolCallArgumentSize, parseToolCallArguments } from "./json-parse.js";'],
+      ["    append(delta) {\n        this.#text += delta;", "    append(delta) {\n        assertToolCallArgumentSize(this.#text.length + delta.length);\n        this.#text += delta;"],
+      ["    replace(text) {", "    replace(text) {\n        assertToolCallArgumentSize(text.length);"],
     ],
   },
 ];
@@ -56,4 +49,4 @@ const updates = patches.map(({ file, replacements }) => {
   return { target, source };
 });
 for (const { target, source } of updates) fs.writeFileSync(target, source);
-console.log("Applied Pi streaming argument safety patch (pi-ai 0.80.7)");
+console.log(`Applied Pi streaming argument safety patch (pi-ai ${manifest.version})`);

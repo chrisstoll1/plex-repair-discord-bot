@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import type { AppConfig } from "../config.js";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -53,22 +53,19 @@ export type PiModelSummary = {
 
 export class PiAuthService {
   private readonly authPath: string;
-  private readonly authStorage: AuthStorage;
-  private readonly modelRegistry: ModelRegistry;
+  private readonly modelRuntime: Promise<ModelRuntime>;
   private activeLogin?: ActiveLogin;
   private refresh?: PiAuthSnapshot["refresh"];
 
   constructor(config: AppConfig) {
     fs.mkdirSync(config.piAgentDir, { recursive: true });
     this.authPath = path.join(config.piAgentDir, "auth.json");
-    this.authStorage = AuthStorage.create(this.authPath);
-    this.modelRegistry = ModelRegistry.create(this.authStorage, path.join(config.piAgentDir, "models.json"));
+    this.modelRuntime = ModelRuntime.create({ authPath: this.authPath, modelsPath: path.join(config.piAgentDir, "models.json") });
   }
 
-  listAvailableModels(): PiModelSummary[] {
-    this.authStorage.reload();
-    return this.modelRegistry
-      .getAvailable()
+  async listAvailableModels(): Promise<PiModelSummary[]> {
+    const runtime = await this.modelRuntime;
+    return (await runtime.getAvailable())
       .map((model) => ({
         provider: model.provider,
         id: model.id,
@@ -79,10 +76,11 @@ export class PiAuthService {
       .sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
   }
 
-  getSnapshot(): PiAuthSnapshot {
-    this.authStorage.reload();
-    const authStatus = this.authStorage.getAuthStatus(OPENAI_CODEX_PROVIDER);
-    const credential = this.authStorage.get(OPENAI_CODEX_PROVIDER);
+  async getSnapshot(): Promise<PiAuthSnapshot> {
+    const runtime = await this.modelRuntime;
+    await runtime.getAvailable();
+    const authStatus = runtime.getProviderAuthStatus(OPENAI_CODEX_PROVIDER);
+    const credential = readStoredCredential(OPENAI_CODEX_PROVIDER, this.authPath);
 
     return {
       authPath: this.authPath,
@@ -110,8 +108,8 @@ export class PiAuthService {
   }
 
   async refreshExpiredCredential(): Promise<PiAuthSnapshot> {
-    this.authStorage.reload();
-    const credential = this.authStorage.get(OPENAI_CODEX_PROVIDER);
+    const runtime = await this.modelRuntime;
+    const credential = readStoredCredential(OPENAI_CODEX_PROVIDER, this.authPath);
     if (credential?.type !== "oauth" || Date.now() < credential.expires) {
       return this.getSnapshot();
     }
@@ -119,24 +117,29 @@ export class PiAuthService {
     const attemptedAt = new Date().toISOString();
     this.refresh = { attemptedAt };
 
-    const apiKey = await this.authStorage.getApiKey(OPENAI_CODEX_PROVIDER, { includeFallback: false });
-    this.authStorage.reload();
-    const errors = this.authStorage.drainErrors();
-    const refreshedCredential = this.authStorage.get(OPENAI_CODEX_PROVIDER);
+    let resolution;
+    let refreshError: unknown;
+    try {
+      resolution = await runtime.getAuth(OPENAI_CODEX_PROVIDER);
+    } catch (error) {
+      refreshError = error;
+    }
+    const refreshedCredential = readStoredCredential(OPENAI_CODEX_PROVIDER, this.authPath);
 
-    if (apiKey && refreshedCredential?.type === "oauth" && Date.now() < refreshedCredential.expires) {
+    if (resolution && refreshedCredential?.type === "oauth" && Date.now() < refreshedCredential.expires) {
       this.refresh = { attemptedAt, refreshedAt: new Date().toISOString() };
     } else {
       this.refresh = {
         attemptedAt,
-        error: errors[0]?.message ?? "OpenAI OAuth refresh failed. Reconnect Pi Auth to continue.",
+        error: refreshError instanceof Error ? refreshError.message : "OpenAI OAuth refresh failed. Reconnect Pi Auth to continue.",
       };
     }
 
     return this.getSnapshot();
   }
 
-  startLogin(): PiAuthSnapshot {
+  async startLogin(): Promise<PiAuthSnapshot> {
+    const runtime = await this.modelRuntime;
     if (this.activeLogin?.status === "pending") {
       return this.getSnapshot();
     }
@@ -148,38 +151,34 @@ export class PiAuthService {
     };
     this.activeLogin = activeLogin;
 
-    void this.authStorage
-      .login(OPENAI_CODEX_PROVIDER, {
-        onSelect: async () => DEVICE_CODE_METHOD,
-        onDeviceCode: (info) => {
-          activeLogin.deviceCode = {
-            userCode: info.userCode,
-            verificationUri: info.verificationUri,
-            intervalSeconds: info.intervalSeconds,
-            expiresInSeconds: info.expiresInSeconds,
-            expiresAt: info.expiresInSeconds ? new Date(Date.now() + info.expiresInSeconds * 1000).toISOString() : undefined,
-          };
-          activeLogin.progress = "Waiting for OpenAI authorization.";
-        },
-        onAuth: (info) => {
-          activeLogin.progress = info.instructions ?? `Open ${info.url} to continue.`;
-        },
-        onPrompt: async () => {
+    void runtime
+      .login(OPENAI_CODEX_PROVIDER, "oauth", {
+        signal: activeLogin.abort.signal,
+        prompt: async (prompt) => {
+          if (prompt.type === "select" && prompt.options.some((option) => option.id === DEVICE_CODE_METHOD)) return DEVICE_CODE_METHOD;
           throw new Error("Portal auth only supports the device-code login flow.");
         },
-        onProgress: (message) => {
-          activeLogin.progress = message;
+        notify: (info) => {
+          if (info.type === "device_code") {
+            activeLogin.deviceCode = {
+              userCode: info.userCode,
+              verificationUri: info.verificationUri,
+              intervalSeconds: info.intervalSeconds,
+              expiresInSeconds: info.expiresInSeconds,
+              expiresAt: info.expiresInSeconds ? new Date(Date.now() + info.expiresInSeconds * 1000).toISOString() : undefined,
+            };
+            activeLogin.progress = "Waiting for OpenAI authorization.";
+          } else if (info.type === "auth_url") {
+            activeLogin.progress = info.instructions ?? `Open ${info.url} to continue.`;
+          } else {
+            activeLogin.progress = info.message;
+          }
         },
-        onManualCodeInput: async () => {
-          throw new Error("Manual browser callback login is not supported in the portal.");
-        },
-        signal: activeLogin.abort.signal,
       })
       .then(() => {
         activeLogin.status = "complete";
         activeLogin.completedAt = new Date().toISOString();
         activeLogin.progress = "OpenAI Codex auth is configured.";
-        this.authStorage.reload();
         if (this.activeLogin === activeLogin) {
           this.activeLogin = undefined;
         }
@@ -197,11 +196,11 @@ export class PiAuthService {
   }
 
   async startLoginAndWaitForDeviceCode(timeoutMs = 5000): Promise<PiAuthSnapshot> {
-    this.startLogin();
+    await this.startLogin();
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
-      const snapshot = this.getSnapshot();
+      const snapshot = await this.getSnapshot();
       if (snapshot.activeLogin?.deviceCode || snapshot.activeLogin?.status !== "pending") {
         return snapshot;
       }
@@ -212,7 +211,7 @@ export class PiAuthService {
     return this.getSnapshot();
   }
 
-  cancelLogin(): PiAuthSnapshot {
+  async cancelLogin(): Promise<PiAuthSnapshot> {
     if (this.activeLogin?.status === "pending") {
       this.activeLogin.abort.abort();
     }
@@ -222,10 +221,9 @@ export class PiAuthService {
     return this.getSnapshot();
   }
 
-  logout(): PiAuthSnapshot {
-    this.cancelLogin();
-    this.authStorage.logout(OPENAI_CODEX_PROVIDER);
-    this.authStorage.reload();
+  async logout(): Promise<PiAuthSnapshot> {
+    await this.cancelLogin();
+    await (await this.modelRuntime).logout(OPENAI_CODEX_PROVIDER);
     this.activeLogin = undefined;
     return this.getSnapshot();
   }
