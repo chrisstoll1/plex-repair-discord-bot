@@ -1,6 +1,7 @@
 **/node_modules
 **/dist
 config
+.agent-local
 .git
 .github
 npm-debug.log*
