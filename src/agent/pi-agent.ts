@@ -22,7 +22,7 @@ import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
-import { isModelUnavailableMessage, ModelUnavailableError } from "./model-errors.js";
+import { classifyAiRequestError, ModelUnavailableError } from "./model-errors.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
 
@@ -115,7 +115,7 @@ export function readAgentSessionResponse(session: Pick<AgentSession, "messages">
   if (last?.stopReason === "error" || last?.stopReason === "aborted") {
     const reason = last.errorMessage?.trim() || (last.stopReason === "aborted" ? "Request was aborted" : "Provider returned an error without details");
     const message = `AI request failed (${last.provider}/${last.model}): ${reason}`;
-    if (last.stopReason === "error" && isModelUnavailableMessage(reason)) throw new ModelUnavailableError(message);
+    if (last.stopReason === "error") throw classifyAiRequestError(new Error(message));
     throw new Error(message);
   }
   const response = messages
@@ -481,9 +481,7 @@ export class PiAgentService {
       if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
       return readAgentSessionResponse(session, params.allowEmptyResponse);
     } catch (error) {
-      const failure = error instanceof Error && isModelUnavailableMessage(error.message)
-        ? new ModelUnavailableError(error.message)
-        : error;
+      const failure = classifyAiRequestError(error);
       if (!params.signal?.aborted) {
         this.logger?.error({ err: failure, modelProvider: model?.provider, modelId: model?.id }, "AI agent session failed");
       }

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { Logger } from "pino";
-import { ModelUnavailableError } from "./model-errors.js";
+import { AiAuthenticationError, ModelUnavailableError } from "./model-errors.js";
 import {
   RepairCaseStore,
   type InboundArrEvent,
@@ -309,6 +309,7 @@ export class RepairCaseService {
         const details = {
           error: error instanceof Error ? error.message : String(error),
           ...(error instanceof ModelUnavailableError ? { errorCode: "model_unavailable" } : {}),
+          ...(error instanceof AiAuthenticationError ? { errorCode: "ai_authentication" } : {}),
         };
         this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details });
         await this.reportSystemEvent(this.store.get(id)!, { type: "runner_error", details }, `${id}:attempt:${current.attempts}:error`);
@@ -395,6 +396,9 @@ export class RepairCaseService {
 }
 
 function fallbackSystemMessage({ type, details }: RepairCaseSystemEvent): string {
+  if (type === "runner_error" && details && typeof details === "object" && "errorCode" in details && details.errorCode === "ai_authentication") {
+    return "I couldn’t continue because the AI login has expired or is no longer valid. Please ask your admin to reconnect the AI login on the web portal’s Connections page, then send another message here to retry this repair.";
+  }
   if (type === "runner_error" && details && typeof details === "object" && "errorCode" in details && details.errorCode === "model_unavailable") {
     return "The configured AI model is not available. Please ask your admin to select an available model in Bot Settings, then send another message here to retry this repair.";
   }

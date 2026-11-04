@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../src/config.js";
 import { RepairCaseService } from "../src/agent/repair-case-service.js";
-import { ModelUnavailableError } from "../src/agent/model-errors.js";
+import { AiAuthenticationError, ModelUnavailableError } from "../src/agent/model-errors.js";
 import { openDatabase, type AppDatabase } from "../src/storage/db.js";
 import { RepairCaseStore, type CreateRepairCase } from "../src/storage/repair-cases.js";
 
@@ -457,6 +457,44 @@ test("unavailable models deliver admin guidance without another AI call and reta
   assert.equal(store.get(repairCase.id)?.attempts, 1);
   const failure = store.listActivity(repairCase.id).find((entry) => entry.kind === "status_changed" && (entry.details as { to?: string }).to === "blocked");
   assert.deepEqual(failure?.details, { from: "working", to: "blocked", error, errorCode: "model_unavailable" });
+});
+
+test("expired AI login on a follow-up gives reconnect guidance and preserves the repair for retry", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("expired-ai-login"));
+  const checkpoint = { summary: "No usable release found on configured indexers" };
+  store.transition(repairCase.id, "blocked", { from: ["ready"], checkpoint });
+  const error = "AI request failed (openai-codex/gpt-6.1-sol): Your authentication token has expired. Please try refreshing it.";
+  const delivered: unknown[] = [];
+  let statusCalls = 0;
+  let reconnected = false;
+  const service = new RepairCaseService(store, {
+    runner: async (_current, context) => {
+      if (!reconnected) throw new AiAuthenticationError(error);
+      assert.deepEqual(context.messages.map((message) => message.content), ["So there are no sources for this episode", "Login reconnected, try again"]);
+      return { status: "resolved" };
+    },
+    onSystemEvent: async () => { statusCalls += 1; throw new Error("AI is unavailable"); },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  t.after(() => service.shutdown());
+  service.start();
+  service.notifyNewMessage(repairCase.id, { content: "So there are no sources for this episode", sourceMessageId: "question" });
+  await waitUntil(() => store.get(repairCase.id)?.status === "blocked" && delivered.length === 1);
+  assert.deepEqual(delivered, [{ content: "I couldn’t continue because the AI login has expired or is no longer valid. Please ask your admin to reconnect the AI login on the web portal’s Connections page, then send another message here to retry this repair." }]);
+  assert.equal(statusCalls, 0);
+  assert.equal(store.get(repairCase.id)?.attempts, 1);
+  assert.equal(store.get(repairCase.id)?.leaseOwner, undefined);
+  assert.deepEqual(store.get(repairCase.id)?.checkpoint, checkpoint);
+  const failure = store.listActivity(repairCase.id).find((entry) => entry.kind === "status_changed" && (entry.details as { errorCode?: string }).errorCode === "ai_authentication");
+  assert.deepEqual(failure?.details, { from: "working", to: "blocked", error, errorCode: "ai_authentication" });
+  assert.doesNotMatch(JSON.stringify(delivered), /openai-codex|gpt-6|stopped this repair safely/);
+
+  reconnected = true;
+  service.notifyNewMessage(repairCase.id, { content: "Login reconnected, try again", sourceMessageId: "retry" });
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+  assert.equal(store.get(repairCase.id)?.attempts, 2);
 });
 
 test("a follow-up interrupts stale running work and reruns with the new message", async (t) => {
