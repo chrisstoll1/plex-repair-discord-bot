@@ -38,7 +38,7 @@ const RADARR_READ_TOOLS = [
   "get_radarr_command",
 ] as const;
 
-const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_plex_library_status", "search_plex_library_section", "get_plex_metadata_children", "get_plex_tv_season", "get_plex_scanner_logs", "get_service_health"] as const;
+const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_plex_library_status", "search_plex_library_section", "get_plex_metadata_children", "get_plex_tv_season", "get_plex_scanner_logs", "get_plex_movie", "find_plex_movies", "get_plex_movie_matches", "get_service_health"] as const;
 
 const SONARR_WRITE_TOOLS = [
   "trigger_sonarr_series_search",
@@ -69,7 +69,7 @@ const RADARR_WRITE_TOOLS = [
   "remove_radarr_movie",
 ] as const;
 
-const PLEX_WRITE_TOOLS = ["refresh_plex_library_section"] as const;
+const PLEX_WRITE_TOOLS = ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match"] as const;
 
 export const TOOL_PROFILES: Record<ToolProfile, readonly string[]> = {
   sonarr_agent: SONARR_READ_TOOLS,
