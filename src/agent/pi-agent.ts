@@ -19,6 +19,7 @@ import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import type { PlexScannerLogQuery } from "../services/plex-scanner-logs.js";
+import type { PlexMovieSearch, PlexMovieMatchQuery, PlexMovieSplit, PlexMovieFixMatch } from "../services/plex-movies.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
@@ -417,7 +418,7 @@ export class PiAgentService {
           confirmationConsumed = true;
           return true;
         },
-      }, TOOL_PROFILES[task.toolProfile]),
+      }, toolNamesForTask(task)),
       thinkingLevel: settings.ai.thinkingLevel,
       signal,
     });
@@ -704,7 +705,7 @@ export class PiAgentService {
   private availableToolProfiles(context: AgentRequestContext): ToolProfile[] {
     const settings = readRuntimeSettings(this.store);
     const allowRepair = canStartRepairWorker(settings, context);
-    return toolProfileNames().filter((profile) => (allowRepair || !isRepairToolProfile(profile)) && !(profile === "plex_repair_agent" && context.caseControl?.plexVerification));
+    return toolProfileNames().filter((profile) => allowRepair || !isRepairToolProfile(profile));
   }
 
   private assertToolProfileAllowed(profile: ToolProfile, context: AgentRequestContext): void {
@@ -718,7 +719,9 @@ export class PiAgentService {
       title: params.title,
       toolProfile: params.toolProfile,
       prompt: params.prompt,
-      input: params.input,
+      input: context.caseControl?.plexVerification && params.toolProfile === "plex_repair_agent"
+        ? { taskInput: params.input, plexRefreshBlocked: true }
+        : params.input,
       parentTaskId: params.parentTaskId,
       channelId: context.channelId,
       userId: context.userId,
@@ -1243,6 +1246,71 @@ export class PiAgentService {
           offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000, description: "nextOffset from previous result, default 0" })),
         }),
         execute: async (_toolCallId, params: PlexScannerLogQuery) => toolResponse(await clients().plex.getScannerLogs(params)),
+      }),
+      defineTool({
+        name: "get_plex_movie",
+        label: "Inspect exact Plex movie",
+        description: "Read compact full movie identity, external GUIDs, all media/part IDs and paths for one ratingKey. Use before split or Fix Match and to verify the result. Preserves all relevant records without raw XML truncation.",
+        parameters: Type.Object({ ratingKey: Type.String({ pattern: "^[1-9][0-9]*$" }) }),
+        execute: async (_toolCallId, params: { ratingKey: string }) => toolResponse(await clients().plex.movies.getMovie(params.ratingKey)),
+      }),
+      defineTool({
+        name: "find_plex_movies",
+        label: "Find Plex movies",
+        description: "Search a movie library with compact paginated identities, external GUIDs and complete media/part paths. Follow nextOffset while hasMore. Use after Split Apart to reidentify every file under its new ratingKey; do not assume old keys remain attached to the same file.",
+        parameters: Type.Object({
+          sectionId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1, maxLength: 200 }),
+          year: Type.Optional(Type.Integer({ minimum: 1800, maximum: 2200 })),
+          offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+        }),
+        execute: async (_toolCallId, params: PlexMovieSearch) => toolResponse(await clients().plex.movies.findMovies(params)),
+      }),
+      defineTool({
+        name: "get_plex_movie_matches",
+        label: "Look up exact Plex movie match",
+        description: "Read-only Plex Movie agent lookup by an exact tmdb://movieID or imdb://ttID. Inspect returned candidate GUID, title and year before Fix Match. Establish the external ID independently from Radarr/movie details; do not guess from similar titles.",
+        parameters: Type.Object({
+          ratingKey: Type.String({ pattern: "^[1-9][0-9]*$" }),
+          externalId: Type.String({ description: "Exact tmdb://123 or imdb://tt123 identifier" }),
+        }),
+        execute: async (_toolCallId, params: PlexMovieMatchQuery) => toolResponse(await clients().plex.movies.getMovieMatches(params)),
+      }),
+      defineTool({
+        name: "split_plex_movie",
+        label: "Split merged Plex movie versions",
+        description: "Plex Split Apart for one movie, preserving all files. Requires a fresh get_plex_movie inspection and every expected part ID/path. Rejects stale snapshots and single-version items. Then find_plex_movies and reidentify each separated item by exact path/part; never reuse ratingKeys blindly. Requires confirmation when configured.",
+        parameters: Type.Object({
+          ratingKey: Type.String({ pattern: "^[1-9][0-9]*$" }),
+          expectedParts: Type.Array(Type.Object({ id: Type.String({ minLength: 1 }), file: Type.String({ minLength: 1 }) }), { minItems: 2, maxItems: 20 }),
+        }),
+        execute: async (_toolCallId, params: PlexMovieSplit) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Split Plex movie ID ${params.ratingKey} preserving parts ${JSON.stringify(params.expectedParts)}`,
+          });
+          if (policy) return policy;
+          return toolResponse(await clients().plex.movies.splitMovie(params));
+        },
+      }),
+      defineTool({
+        name: "fix_plex_movie_match",
+        label: "Fix exact Plex movie match",
+        description: "Apply an exact identity to one isolated movie part. Refuses merged/multiple-version items, stale paths/parts/identity, and candidates not returned by a fresh external-ID lookup. Split and reidentify the target first. Returns submitted versus verified separately; inspect metadata until verified and verify other split items. No file deletion. Requires confirmation when configured.",
+        parameters: Type.Object({
+          ratingKey: Type.String({ pattern: "^[1-9][0-9]*$" }),
+          expectedPart: Type.Object({ id: Type.String({ minLength: 1 }), file: Type.String({ minLength: 1 }) }),
+          expectedCurrentGuid: Type.String({ minLength: 1 }),
+          externalId: Type.String({ description: "Independently verified exact tmdb://movieID or imdb://ttID" }),
+          matchGuid: Type.String({ minLength: 1, description: "GUID returned by get_plex_movie_matches" }),
+          title: Type.String({ minLength: 1, description: "Exact title from the candidate" }),
+          year: Type.Integer({ minimum: 1800, maximum: 2200 }),
+        }),
+        execute: async (_toolCallId, params: PlexMovieFixMatch) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Fix Plex movie ID ${params.ratingKey} part ${JSON.stringify(params.expectedPart)} from ${params.expectedCurrentGuid} to ${params.externalId} candidate ${params.matchGuid} ${JSON.stringify(params.title)} (${params.year})`,
+          });
+          if (policy) return policy;
+          return toolResponse(await clients().plex.movies.fixMovieMatch(params));
+        },
       }),
       defineTool({
         name: "refresh_sonarr_series",
@@ -1899,4 +1967,12 @@ function setSeasonMonitored(value: unknown, seasonNumber: number, monitored: boo
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function toolNamesForTask(task: Pick<ToolAgentTask, "toolProfile" | "input">): readonly string[] {
+  if (!isToolProfile(task.toolProfile)) throw new Error(`Unknown tool profile: ${task.toolProfile}`);
+  const names = TOOL_PROFILES[task.toolProfile];
+  return isRecord(task.input) && task.input.plexRefreshBlocked === true
+    ? names.filter((name) => name !== "refresh_plex_library_section")
+    : names;
 }

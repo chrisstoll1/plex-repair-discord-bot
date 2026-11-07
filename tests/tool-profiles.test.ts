@@ -5,6 +5,8 @@ import { TOOL_PROFILES, isRepairToolProfile, toolProfileNames } from "../src/age
 const WRITE_TOOLS = new Set([
   "trigger_radarr_movie_search",
   "refresh_plex_library_section",
+  "split_plex_movie",
+  "fix_plex_movie_match",
   "trigger_sonarr_series_search",
   "trigger_sonarr_season_search",
   "trigger_sonarr_episode_search",
@@ -46,5 +48,5 @@ test("repair profiles expose every write tool once and remain service-scoped", (
   assert.equal(exposedWrites.length, WRITE_TOOLS.size);
   assert.equal(TOOL_PROFILES.sonarr_repair_agent.some((tool) => tool.includes("radarr")), false);
   assert.equal(TOOL_PROFILES.radarr_repair_agent.some((tool) => tool.includes("sonarr")), false);
-  assert.deepEqual(TOOL_PROFILES.plex_repair_agent.filter((tool) => WRITE_TOOLS.has(tool)), ["refresh_plex_library_section"]);
+  assert.deepEqual(TOOL_PROFILES.plex_repair_agent.filter((tool) => WRITE_TOOLS.has(tool)), ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match"]);
 });

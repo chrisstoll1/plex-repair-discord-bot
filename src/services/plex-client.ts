@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { buildQueryPath, requestMedia } from "./http.js";
 import { downloadPlexLogs, queryPlexScannerLogs, validateScannerLogQuery, type PlexScannerLogQuery } from "./plex-scanner-logs.js";
+import { PlexMovieClient } from "./plex-movies.js";
 
 export type PlexConnectionSettings = {
   url?: string;
@@ -35,6 +36,10 @@ export type PlexLibrarySectionStatus = {
 };
 
 export class PlexClient {
+  readonly movies = new PlexMovieClient(
+    (path, method) => this.requestText(path, method),
+    (movieId) => this.requestText(`https://metadata.provider.plex.tv/library/metadata/${movieId}?includeGuids=1`),
+  );
   constructor(
     private readonly settings: PlexConnectionSettings,
     private readonly timeoutSeconds = 60,
@@ -126,19 +131,20 @@ export class PlexClient {
     return { refreshRequested: true, sectionId, ...(directoryPath ? { directoryPath } : {}), ...(response ? { response } : {}) };
   }
 
-  private async requestText(path: string): Promise<string> {
+  private async requestText(path: string, method = "GET"): Promise<string> {
     if (!this.settings.url || !this.settings.token) {
       throw new Error("Plex is not configured");
     }
 
     return requestMedia<string>({
       service: "Plex",
+      method,
       logService: "plex",
       baseUrl: this.settings.url,
-      path: buildQueryPath(path, { "X-Plex-Token": this.settings.token }),
+      path,
       logPath: path,
       timeoutSeconds: this.timeoutSeconds,
-      headers: { Accept: "application/xml,text/xml" },
+      headers: { Accept: "application/xml,text/xml", "X-Plex-Token": this.settings.token },
       responseType: "text",
       logger: this.logger,
     });
