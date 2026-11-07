@@ -12,6 +12,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
 - Diagnose missing or incorrect movies, series, seasons, episodes, specials, and anime releases.
 - Compare Plex availability with Sonarr or Radarr state, queues, history, files, and releases.
+- Diagnose Plex indexing and matching issues using read-only scanner/server log excerpts filtered by title/path, with context, server-local time windows, pagination, and credential redaction.
 - Search for and grab releases, import and rename files, update monitoring and media settings, and refresh Plex libraries.
 - Preview and execute Sonarr or Radarr manual imports with explicit media mappings and import modes, and preview renames before applying them.
 - Restrict requests by Discord guild or channel and repairs by Discord role.
@@ -73,6 +74,8 @@ http://localhost:3000
 The `/config` volume is required for persistent settings, secrets, repair context, task history, and OpenAI auth. Back up the entire directory as a unit.
 
 Use service URLs reachable from the container, such as `http://sonarr:8989`, `http://radarr:7878`, and `http://plex:32400`. For services on another machine, use their LAN addresses. Direct Docker or LAN URLs are preferable to tunnels and public proxies, which may time out during long release lookups.
+
+Scanner diagnostics use Plex's `/diagnostics/logs` ZIP download with the configured Plex token. The token must have administrator log-download access. No Plex filesystem mount is required. Only scanner, matcher, analysis, and server logs (including retained rotations) are read in memory; archives are never extracted to disk. Downloads are limited to 32 MiB, each log to 16 MiB, and total selected logs to 64 MiB. Filters use Plex server local time (`YYYY-MM-DDTHH:mm:ss` without a timezone suffix); missing or rotated log entries cannot prove that a file was scanned or is healthy. The tool does not enable logging or trigger scans.
 
 For TrueNAS SCALE, use the same Compose configuration in a Custom App and replace `./config` with a dataset path such as `/mnt/tank/apps/plex-repairman/config`.
 

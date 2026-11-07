@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { buildQueryPath, requestMedia } from "./http.js";
+import { downloadPlexLogs, queryPlexScannerLogs, validateScannerLogQuery, type PlexScannerLogQuery } from "./plex-scanner-logs.js";
 
 export type PlexConnectionSettings = {
   url?: string;
@@ -55,6 +56,13 @@ export class PlexClient {
 
   async search(query: string): Promise<string> {
     return this.requestText(buildQueryPath("/search", { query }));
+  }
+
+  async getScannerLogs(query: PlexScannerLogQuery) {
+    validateScannerLogQuery(query);
+    if (!this.settings.url || !this.settings.token) throw new Error("Plex is not configured");
+    const archive = await downloadPlexLogs(this.settings.url, this.settings.token, this.timeoutSeconds);
+    return queryPlexScannerLogs(archive, query, [this.settings.token]);
   }
 
   async getLibrarySections(): Promise<string> {
