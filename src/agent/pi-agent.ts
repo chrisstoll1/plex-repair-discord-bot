@@ -18,6 +18,7 @@ import type { ConversationMessage } from "../storage/conversation.js";
 import type { SettingsStore } from "../storage/settings.js";
 import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
+import type { PlexScannerLogQuery } from "../services/plex-scanner-logs.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
@@ -1228,6 +1229,20 @@ export class PiAgentService {
           title: Type.String({ description: "Media title to find in that library" }),
         }),
         execute: async (_toolCallId, params: { sectionId: number; title: string }) => toolResponse(await clients().plex.searchLibrarySection(params.sectionId, params.title)),
+      }),
+      defineTool({
+        name: "get_plex_scanner_logs",
+        label: "Read Plex scanner logs",
+        description: "Read-only filtered scanner, matcher, analysis and server log excerpts from Plex's diagnostic ZIP API. Use a specific movie/show title or directory/file path to diagnose skipped files, matching, access and analysis errors. Returns bounded redacted lines with timestamps, file names and context. Follow nextOffset while hasMore; never infer absence or corruption from no matches. Does not scan, change logging settings, or inspect file contents. Requires Plex admin log-download access.",
+        parameters: Type.Object({
+          query: Type.String({ minLength: 3, maxLength: 500, description: "Literal title or path substring; not a regular expression" }),
+          since: Type.Optional(Type.String({ description: "Inclusive Plex SERVER LOCAL time YYYY-MM-DDTHH:mm:ss without timezone suffix; do not pass UTC unless the server uses UTC" })),
+          until: Type.Optional(Type.String({ description: "Inclusive Plex SERVER LOCAL time YYYY-MM-DDTHH:mm:ss without timezone suffix" })),
+          contextLines: Type.Optional(Type.Integer({ minimum: 0, maximum: 3, description: "Surrounding lines per match, default 1" })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Maximum returned lines, default 40; output size may yield fewer" })),
+          offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000, description: "nextOffset from previous result, default 0" })),
+        }),
+        execute: async (_toolCallId, params: PlexScannerLogQuery) => toolResponse(await clients().plex.getScannerLogs(params)),
       }),
       defineTool({
         name: "refresh_sonarr_series",
