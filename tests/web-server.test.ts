@@ -31,6 +31,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   const settings = new SettingsStore(db, SecretBox.open(config.secretsKeyPath));
   const repairs = new RepairCaseStore(db);
   settings.setString("discord.token", "never-return-this", { secret: true });
+  settings.setString("seerr.apiKey", "never-return-seerr", { secret: true });
   settings.setString("discord.applicationId", "before");
 
   let restartCount = 0;
@@ -81,6 +82,9 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.deepEqual(read.json().settings.discord.token, { configured: true });
   assert.equal(read.json().settings.ai.serviceTier, "default");
   assert.doesNotMatch(read.body, /never-return-this/);
+  assert.doesNotMatch(read.body, /never-return-seerr/);
+  assert.equal(read.json().settings.seerr.preferForRequests, true);
+  assert.equal(read.json().settings.repair.allowDirectAdd, false);
 
   const invalid = await app.inject({
     method: "PUT",
@@ -102,6 +106,22 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(settings.getJson<{ serviceTier?: string }>("ai", {}).serviceTier, "priority");
   assert.equal(settings.getString("discord.token"), undefined);
   assert.equal(restartCount, 1);
+  assert.equal(settings.getString("seerr.apiKey"), "never-return-seerr", "legacy settings saves keep Seerr credentials");
+  const withSeerr = { ...settingsPayload(), seerr: { url: "http://seerr:5055", apiKey: { action: "replace", value: "new-seerr-secret" }, preferForRequests: true, userMappings: "107286271453356032:1", defaultUserId: 1 }, repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: true } };
+  const connected = await app.inject({ method: "PUT", url: "/api/settings", payload: withSeerr });
+  assert.equal(connected.statusCode, 200);
+  assert.doesNotMatch(connected.body, /new-seerr-secret/);
+  assert.equal(connected.json().settings.seerr.apiKey.configured, true);
+  assert.equal(connected.json().settings.seerr.defaultUserId, 1);
+  assert.equal(connected.json().settings.repair.allowDirectAdd, true);
+  assert.equal(settings.getString("seerr.apiKey"), "new-seerr-secret");
+  assert.equal((db.prepare("SELECT secret FROM app_settings WHERE key = 'seerr.apiKey'").get() as { secret: number }).secret, 1);
+  const invalidMapping = await app.inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, userMappings: "name:1" } } });
+  assert.equal(invalidMapping.statusCode, 400);
+  assert.equal(settings.getString("seerr.userMappings"), "107286271453356032:1");
+  const cleared = await app.inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, apiKey: { action: "clear" } } } });
+  assert.equal(cleared.statusCode, 200);
+  assert.equal(cleared.json().settings.seerr.apiKey.configured, false);
 
   assert.equal((await app.inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
   assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });

@@ -12,6 +12,8 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
 - Diagnose missing or incorrect movies, series, seasons, episodes, specials, and anime releases.
 - Compare Plex availability with Sonarr or Radarr state, queues, history, files, and releases.
+- Request new movies and TV seasons through optional Seerr integration, retaining request IDs, approval states, and links in repair history.
+- Add movies to Radarr or series to Sonarr when the direct-add toggle is enabled, using existing roots/profiles and requested TV-season scope.
 - Diagnose Plex indexing and matching issues using read-only scanner/server log excerpts filtered by title/path, with context, server-local time windows, pagination, and credential redaction.
 - Inspect compact movie identities and all file versions, split incorrectly merged Plex movies, and fix an isolated movie's match using an exact external-ID lookup while preserving both files.
 - Search for and grab releases, import and rename files, update monitoring and media settings, and refresh Plex libraries.
@@ -33,6 +35,8 @@ Repair execution is disabled by default:
 - `Require confirmation` asks the requesting user to approve one exact server-described repair action with temporary Discord Confirm/Cancel buttons before that action can execute.
 - Disabling confirmation permits direct non-destructive repairs for users who satisfy the configured repair-role policy.
 - `Allow destructive repairs` must also be enabled for queue removal, file deletion, and movie or series removal.
+- `Allow direct Sonarr/Radarr additions` controls new direct additions and defaults off. It does not change existing-media repair permissions.
+- Seerr is preferred for new requests when configured. To choose direct additions instead, enable the direct-add toggle and turn off `Prefer Seerr for new requests` in Connections. Preferred Seerr approvals, quotas, and denials cannot be bypassed with direct adds.
 - Repair policy is checked again when each write action runs.
 
 ## Quick Start
@@ -86,6 +90,7 @@ For TrueNAS SCALE, use the same Compose configuration in a Custom App and replac
 
 1. Open `http://<host>:3000/connections`.
 2. Enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
+   Optionally add Seerr's URL and API key. Requests use Seerr's configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
 3. Enter the Discord application ID if you want the global `/health` slash command.
 4. Connect OpenAI Codex using the device-code panel.
 5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, rename, and manual-interaction-required events.

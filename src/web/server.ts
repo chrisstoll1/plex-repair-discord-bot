@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   aiSettingsSchema,
   readRuntimeSettings,
+  seerrUserMappingsSchema,
   repairSettingsSchema,
   timeoutSettingsSchema,
   type RuntimeSettings,
@@ -45,6 +46,7 @@ const settingsUpdateSchema = z
     sonarr: z.object({ url: optionalUrl, apiKey: secretUpdateSchema }).strict(),
     radarr: z.object({ url: optionalUrl, apiKey: secretUpdateSchema }).strict(),
     plex: z.object({ url: optionalUrl, token: secretUpdateSchema }).strict(),
+    seerr: z.object({ url: optionalUrl, apiKey: secretUpdateSchema, preferForRequests: z.boolean(), userMappings: seerrUserMappingsSchema, defaultUserId: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0) }).strict().optional(),
     ai: z
       .object({
         modelProvider: nonEmptyTrimmedString,
@@ -59,7 +61,7 @@ const settingsUpdateSchema = z
         releaseLookupSeconds: z.number().int().min(15).max(900),
       })
       .strict(),
-    repair: z.object({ requireConfirmation: z.boolean(), allowDestructive: z.boolean() }).strict(),
+    repair: z.object({ requireConfirmation: z.boolean(), allowDestructive: z.boolean(), allowDirectAdd: z.boolean().default(false) }).strict(),
   })
   .strict();
 
@@ -135,11 +137,12 @@ export async function createWebServer(
   app.get("/api/status", async () => {
     const settings = readRuntimeSettings(store);
     const clients = createMediaClients(store, logger);
-    const [piSnapshot, sonarr, radarr, plex] = await Promise.all([
+    const [piSnapshot, sonarr, radarr, plex, seerr] = await Promise.all([
       piAuth.refreshExpiredCredential(),
       checkService("Sonarr", settings.sonarr.url, Boolean(settings.sonarr.url && settings.sonarr.apiKey), () => clients.sonarr.getSystemStatus()),
       checkService("Radarr", settings.radarr.url, Boolean(settings.radarr.url && settings.radarr.apiKey), () => clients.radarr.getSystemStatus()),
       checkService("Plex", settings.plex.url, Boolean(settings.plex.url && settings.plex.token), () => clients.plex.getIdentity()),
+      checkService("Seerr", settings.seerr.url, clients.seerr.isConfigured(), () => clients.seerr.getStatus()),
     ]);
 
     return {
@@ -151,6 +154,7 @@ export async function createWebServer(
         sonarr,
         radarr,
         plex,
+        seerr,
       ],
     };
   });
@@ -420,6 +424,13 @@ function writeSettings(writer: SettingsWriter, update: SettingsUpdate): void {
   applySecret(writer, "radarr.apiKey", update.radarr.apiKey);
   writer.setString("plex.url", update.plex.url);
   applySecret(writer, "plex.token", update.plex.token);
+  if (update.seerr) {
+    writer.setString("seerr.url", update.seerr.url);
+    applySecret(writer, "seerr.apiKey", update.seerr.apiKey);
+    writer.setString("seerr.preferForRequests", String(update.seerr.preferForRequests));
+    writer.setString("seerr.userMappings", update.seerr.userMappings);
+    writer.setString("seerr.defaultUserId", String(update.seerr.defaultUserId));
+  }
 
   writer.setJson("ai", update.ai);
   writer.setJson("timeouts", update.timeouts);
@@ -445,6 +456,7 @@ function publicSettings(settings: RuntimeSettings) {
     sonarr: { url: settings.sonarr.url, apiKey: { configured: Boolean(settings.sonarr.apiKey) } },
     radarr: { url: settings.radarr.url, apiKey: { configured: Boolean(settings.radarr.apiKey) } },
     plex: { url: settings.plex.url, token: { configured: Boolean(settings.plex.token) } },
+    seerr: { url: settings.seerr.url, apiKey: { configured: Boolean(settings.seerr.apiKey) }, preferForRequests: settings.seerr.preferForRequests, userMappings: settings.seerr.userMappings, defaultUserId: settings.seerr.defaultUserId },
     ai: {
       modelProvider: settings.ai.modelProvider,
       modelId: settings.ai.modelId,

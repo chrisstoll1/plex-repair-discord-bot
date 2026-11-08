@@ -64,6 +64,14 @@ function ConnectionsFields({ form }: { form: FormParts }) {
     <Section title="Plex media server" description="Primary library and playback server."><TextField label="Server URL" path="plex.url" register={register} error={errors.plex?.url} placeholder="http://plex.local:32400" /><SecretField label="Plex token" base="plex.token" register={register} control={control} watch={watch} /></Section>
     <Section title="Sonarr" description="Television index and repair target."><TextField label="Server URL" path="sonarr.url" register={register} error={errors.sonarr?.url} placeholder="http://sonarr.local:8989" /><SecretField label="API key" base="sonarr.apiKey" register={register} control={control} watch={watch} /></Section>
     <Section title="Radarr" description="Movie index and repair target."><TextField label="Server URL" path="radarr.url" register={register} error={errors.radarr?.url} placeholder="http://radarr.local:7878" /><SecretField label="API key" base="radarr.apiKey" register={register} control={control} watch={watch} /></Section>
+    <Section title="Seerr requests" description="Optional request tracking, approvals, and server defaults for new movies and TV shows.">
+      <TextField label="Seerr URL" path="seerr.url" register={register} error={errors.seerr?.url} placeholder="http://seerr.local:5055" />
+      <SecretField label="Seerr API key" base="seerr.apiKey" register={register} control={control} watch={watch} />
+      <ToggleField label="Prefer Seerr for new requests" description="Use Seerr whenever this connection is configured. Its approval and quota rules apply." path="seerr.preferForRequests" control={control} />
+      <TextField label="Seerr account for unlinked requesters" path="seerr.defaultUserId" register={register} error={errors.seerr?.defaultUserId} type="number" placeholder="0" />
+      <p className="text-xs text-zinc-500">A Seerr user ID to own unlinked Discord requests. Its permissions and approval rules apply. Use 0 to require linked accounts.</p>
+      <div><Label htmlFor="seerr-user-mappings">Discord user mappings</Label><textarea id="seerr-user-mappings" {...register("seerr.userMappings")} rows={3} placeholder="DiscordID:SeerrUserID" className="mt-2 w-full rounded-md border border-line bg-ink px-3 py-2 text-sm text-zinc-100" /><p className="mt-1 text-xs text-zinc-500">Optional overrides, one pair per line. Otherwise use the Discord IDs linked in each Seerr user's notification settings.</p>{errors.seerr?.userMappings && <p className="mt-1 text-xs text-red-400">{errors.seerr.userMappings.message}</p>}</div>
+    </Section>
   </div>;
 }
 
@@ -72,6 +80,7 @@ function BotFields({ form, models, modelsPending, modelsError }: { form: FormPar
   return <div className="grid gap-5 xl:grid-cols-2">
     <Section title="Discord access" description="Limit where commands are accepted and who can run repairs."><TextField label="Allowed guild IDs" path="discord.allowedGuildIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Allowed channel IDs" path="discord.allowedChannelIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Repair role IDs" path="discord.repairRoleIds" register={register} placeholder="Comma-separated" /><ToggleField label="Allow direct messages" description="Accept repair requests outside servers." path="discord.allowDirectMessages" control={control} /><ToggleField label="Message reactions" description="Use reactions to communicate task state." path="discord.reactionsEnabled" control={control} /></Section>
     <AiModelFields form={form} models={models} pending={modelsPending} error={modelsError} />
+    <Section title="New content requests" description="Choose whether the bot can add new library entries directly."><ToggleField label="Allow direct Sonarr/Radarr additions" description="Allow new movies or series using existing root folders and quality profiles. Off by default. A configured preferred Seerr connection handles requests instead." path="repair.allowDirectAdd" control={control} /></Section>
     <Section title="Safety and timeouts" description="Set request limits and control which repairs may execute."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={register} error={errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={register} error={errors.timeouts?.releaseLookupSeconds} type="number" /><ToggleField label="Require confirmation" description="Blocks repair execution until action-specific confirmation is implemented." path="repair.requireConfirmation" control={control} /><ToggleField label="Allow destructive repairs" description="Permit queue removal, file deletion, and movie or series removal." path="repair.allowDestructive" control={control} /></Section>
   </div>;
 }
@@ -104,7 +113,7 @@ function ToggleField({ label, description, path, control }: { label: string; des
   return <Controller name={path} control={control} render={({ field }) => <div className="flex items-center justify-between gap-4 rounded-lg border border-line bg-ink/40 p-3"><div><Label>{label}</Label><p className="mt-0.5 text-xs text-zinc-500">{description}</p></div><Switch checked={Boolean(field.value)} onCheckedChange={field.onChange} aria-label={label} /></div>} />;
 }
 
-function SecretField({ label, base, register, control, watch }: { label: string; base: "discord.token" | "sonarr.apiKey" | "radarr.apiKey" | "plex.token"; register: FormParts["register"]; control: FormParts["control"]; watch: FormParts["watch"] }) {
+function SecretField({ label, base, register, control, watch }: { label: string; base: "discord.token" | "sonarr.apiKey" | "radarr.apiKey" | "plex.token" | "seerr.apiKey"; register: FormParts["register"]; control: FormParts["control"]; watch: FormParts["watch"] }) {
   const [visible, setVisible] = useState(false);
   const configured = watch(`${base}.configured`);
   const clear = watch(`${base}.clear`);

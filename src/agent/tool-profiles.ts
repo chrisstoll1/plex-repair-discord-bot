@@ -2,14 +2,17 @@ export type ToolProfile =
   | "sonarr_agent"
   | "radarr_agent"
   | "plex_agent"
+  | "seerr_agent"
   | "sonarr_repair_agent"
   | "radarr_repair_agent"
-  | "plex_repair_agent";
+  | "plex_repair_agent"
+  | "seerr_request_agent";
 
 const SONARR_READ_TOOLS = [
   "search_sonarr_series",
   "get_sonarr_series",
   "list_sonarr_root_folders",
+  "get_sonarr_add_options",
   "get_sonarr_queue",
   "get_sonarr_queue_details",
   "get_sonarr_history",
@@ -26,6 +29,7 @@ const RADARR_READ_TOOLS = [
   "search_radarr_movies",
   "get_radarr_movie",
   "list_radarr_root_folders",
+  "get_radarr_add_options",
   "get_radarr_queue",
   "get_radarr_queue_details",
   "get_radarr_history",
@@ -41,6 +45,7 @@ const RADARR_READ_TOOLS = [
 const PLEX_READ_TOOLS = ["search_all_media", "list_plex_libraries", "get_plex_library_status", "search_plex_library_section", "get_plex_metadata_children", "get_plex_tv_season", "get_plex_scanner_logs", "get_plex_movie", "find_plex_movies", "get_plex_movie_matches", "get_service_health"] as const;
 
 const SONARR_WRITE_TOOLS = [
+  "add_sonarr_series",
   "trigger_sonarr_series_search",
   "trigger_sonarr_season_search",
   "trigger_sonarr_episode_search",
@@ -58,6 +63,7 @@ const SONARR_WRITE_TOOLS = [
 ] as const;
 
 const RADARR_WRITE_TOOLS = [
+  "add_radarr_movie",
   "trigger_radarr_movie_search",
   "grab_radarr_release",
   "remove_radarr_queue_item",
@@ -70,17 +76,20 @@ const RADARR_WRITE_TOOLS = [
 ] as const;
 
 const PLEX_WRITE_TOOLS = ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match"] as const;
+const SEERR_READ_TOOLS = ["search_seerr_media", "get_seerr_media", "get_seerr_request"] as const;
 
 export const TOOL_PROFILES: Record<ToolProfile, readonly string[]> = {
   sonarr_agent: SONARR_READ_TOOLS,
   radarr_agent: RADARR_READ_TOOLS,
   plex_agent: PLEX_READ_TOOLS,
+  seerr_agent: SEERR_READ_TOOLS,
   sonarr_repair_agent: [...SONARR_READ_TOOLS, ...SONARR_WRITE_TOOLS],
   radarr_repair_agent: [...RADARR_READ_TOOLS, ...RADARR_WRITE_TOOLS],
   plex_repair_agent: [...PLEX_READ_TOOLS, ...PLEX_WRITE_TOOLS],
+  seerr_request_agent: [...SEERR_READ_TOOLS, "request_seerr_media"],
 };
 
-const REPAIR_PROFILES = new Set<ToolProfile>(["sonarr_repair_agent", "radarr_repair_agent", "plex_repair_agent"]);
+const REPAIR_PROFILES = new Set<ToolProfile>(["sonarr_repair_agent", "radarr_repair_agent", "plex_repair_agent", "seerr_request_agent"]);
 
 export function isToolProfile(value: string): value is ToolProfile {
   return Object.prototype.hasOwnProperty.call(TOOL_PROFILES, value);

@@ -9,12 +9,20 @@ export type RepairAuthorizationOptions = {
   action: string;
   confirmed?: boolean;
   destructive?: boolean;
+  directAdd?: boolean;
 };
 
 export function authorizeRepair(settings: RuntimeSettings, context: RepairContext, options: RepairAuthorizationOptions) {
   const repairRoles = csvToSet(settings.discord.repairRoleIds);
   if (repairRoles.size > 0 && !context.roles.some((role) => repairRoles.has(role))) {
     return toolResponse({ blocked: true, reason: "User does not have an allowed repair role", action: options.action });
+  }
+
+  if (options.directAdd && !settings.repair.allowDirectAdd) {
+    return toolResponse({ blocked: true, reason: "Direct Sonarr/Radarr additions are disabled in Bot Settings", action: options.action });
+  }
+  if (options.directAdd && settings.seerr?.url && settings.seerr.apiKey && settings.seerr.preferForRequests) {
+    return toolResponse({ blocked: true, reason: "New requests are routed through Seerr. Use the Seerr request tools; its approval and quota decisions must be respected.", action: options.action });
   }
 
   if (options.destructive && !settings.repair.allowDestructive) {
