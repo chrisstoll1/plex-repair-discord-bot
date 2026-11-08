@@ -40,6 +40,16 @@ function fixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
   return { state, client: new SeerrClient(settings, 1, discordId) };
 }
 
+test("Seerr search percent-encodes spaces and reserved characters for its query validator", async (t) => {
+  const inputs: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string) => {
+    inputs.push(String(input));
+    return input.includes("/auth/me") ? Response.json({ id: 7 }) : Response.json({ results: [] });
+  });
+  await new SeerrClient(settings, 1, discordId).search("A Week Away + &?", 2);
+  assert.equal(inputs.at(-1), "http://seerr:5055/api/v1/search?query=A%20Week%20Away%20%2B%20%26%3F&page=2");
+});
+
 test("Seerr submits exact tracked movie as trusted Discord-mapped user without override fields", async (t) => {
   const { client, state } = fixture(t);
   const result = await client.requestMedia({ ...movieParams, userId: 1, ignoreQuota: true, serverId: 99 } as any);

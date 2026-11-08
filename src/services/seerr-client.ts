@@ -22,7 +22,8 @@ export class SeerrClient {
   async search(query: string, page = 1) {
     if (!query.trim() || query.length > 200 || !positive(page)) throw new Error("A title and positive search page are required");
     const userId = await this.userId();
-    const response = await this.http(buildQueryPath("/search", { query, page }), userId);
+    // Seerr's query validator requires percent-encoded spaces, not form-style '+'.
+    const response = await this.http(buildQueryPath("/search", { query, page }).replace(/\+/g, "%20"), userId);
     const results = list(response.results).filter((item) => item.mediaType === "movie" || item.mediaType === "tv");
     const compact = results.map((item) => ({ tmdbId: item.id, mediaType: item.mediaType, title: item.title ?? item.name,
       year: dateYear(item.releaseDate ?? item.firstAirDate), overview: string(item.overview)?.slice(0, 350),
