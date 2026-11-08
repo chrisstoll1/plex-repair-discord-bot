@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { buildQueryPath, requestMedia, type QueryValue } from "./http.js";
+import { ArrAddClient } from "./arr-add.js";
 
 export type ArrConnectionSettings = {
   url?: string;
@@ -148,6 +149,7 @@ type ManualImportCandidate = {
 };
 
 export class ArrClient {
+  readonly additions: ArrAddClient;
   private readonly releaseCache = new Map<string, unknown[]>();
 
   constructor(
@@ -155,7 +157,7 @@ export class ArrClient {
     private readonly settings: ArrConnectionSettings,
     private readonly timeouts: ArrTimeoutSettings = { standardSeconds: 60, releaseLookupSeconds: 300 },
     private readonly logger?: Logger,
-  ) {}
+  ) { this.additions = new ArrAddClient(this.name, (path, options) => this.request(path, options)); }
 
   isConfigured(): boolean {
     return Boolean(this.settings.url && this.settings.apiKey);

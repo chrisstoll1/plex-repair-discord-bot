@@ -20,6 +20,8 @@ import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import type { PlexScannerLogQuery } from "../services/plex-scanner-logs.js";
 import type { PlexMovieSearch, PlexMovieMatchQuery, PlexMovieSplit, PlexMovieFixMatch } from "../services/plex-movies.js";
+import type { AddMovieParams, AddSeriesParams } from "../services/arr-add.js";
+import type { SeerrMediaType, SeerrRequestParams } from "../services/seerr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
@@ -254,6 +256,7 @@ export class PiAgentService {
     const prompt = [
       `Discord context: ${JSON.stringify(discordContext)}`,
       `Repair policy: ${JSON.stringify(settings.repair)}`,
+      `New content request routing: ${JSON.stringify(contentRequestRouting(settings))}`,
       formatRecentMessages(recentMessages),
       `User request: ${message}`,
     ]
@@ -317,6 +320,7 @@ export class PiAgentService {
     const prompt = [
       `Repair policy: ${JSON.stringify(settings.repair)}`,
       `Available event integrations: ${params.webhookProviders.length ? params.webhookProviders.join(", ") : "none"}`,
+      `New content request routing: ${JSON.stringify(contentRequestRouting(settings))}`,
       `Original objective: ${params.objective}`,
       params.checkpoint === undefined ? undefined : `Saved checkpoint: ${JSON.stringify(params.checkpoint)}`,
       params.resume ? `Resume trigger: ${JSON.stringify(params.resume)}. Continue from the saved checkpoint; do not describe this as starting over.` : undefined,
@@ -733,10 +737,74 @@ export class PiAgentService {
   }
 
   private createTools(context: AgentRequestContext, toolNames?: readonly string[]) {
-    const mediaClients = createMediaClients(this.store, this.logger);
+    const mediaClients = createMediaClients(this.store, this.logger, context.userId);
     const clients = () => mediaClients;
 
     const tools = [
+      defineTool({
+        name: "get_radarr_add_options", label: "Inspect movie addition options",
+        description: "Read accessible configured Radarr roots, quality profiles and compact existing-library usage. Use before adding a movie; recommendations reflect current usage rather than a configured default.",
+        parameters: Type.Object({}),
+        execute: async () => toolResponse(await clients().radarr.additions.getOptions()),
+      }),
+      defineTool({
+        name: "get_sonarr_add_options", label: "Inspect TV addition options",
+        description: "Read configured Sonarr roots, quality profiles and existing series conventions, optionally filtered by standard/anime/daily type. Use before adding a series.",
+        parameters: Type.Object({ seriesType: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("anime"), Type.Literal("daily")])) }),
+        execute: async (_id, params: { seriesType?: "standard" | "anime" | "daily" }) => toolResponse(await clients().sonarr.additions.getOptions(params.seriesType)),
+      }),
+      defineTool({
+        name: "add_radarr_movie", label: "Add a new Radarr movie",
+        description: "Add one independently identified movie by TMDB ID using an existing root/profile. Requires Allow direct Sonarr/Radarr additions in Bot Settings and respects preferred Seerr routing, roles and confirmation. Revalidates identity/configuration and preserves existing items. Search defaults true. Added/search requested does not mean downloaded or present in Plex.",
+        parameters: Type.Object({ tmdbId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), rootFolderPath: Type.String({ minLength: 1 }), qualityProfileId: Type.Integer({ minimum: 1 }), search: Type.Optional(Type.Boolean()) }),
+        execute: async (_id, params: AddMovieParams) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { directAdd: true,
+            action: `Add Radarr movie ${params.tmdbId} ${JSON.stringify(params.title)} (${params.year}) root ${params.rootFolderPath} profile ${params.qualityProfileId} search=${params.search !== false}` });
+          if (policy) return policy;
+          return toolResponse(await clients().radarr.additions.addMovie(params));
+        },
+      }),
+      defineTool({
+        name: "add_sonarr_series", label: "Add a new Sonarr series",
+        description: "Add one independently identified TV/anime series by TVDB ID with existing root/profile and explicit type/folder choice. Requires direct additions enabled and respects preferred Seerr routing, roles and confirmation. Pass seasonNumbers for a season-scoped request (0 means specials only when explicitly asked). Omit for all regular seasons and future seasons. Search defaults true and searches only monitored scope. Existing series are returned unchanged.",
+        parameters: Type.Object({ tvdbId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), rootFolderPath: Type.String({ minLength: 1 }), qualityProfileId: Type.Integer({ minimum: 1 }), search: Type.Optional(Type.Boolean()),
+          seriesType: Type.Union([Type.Literal("standard"), Type.Literal("anime"), Type.Literal("daily")]), seasonFolder: Type.Boolean(), seasonNumbers: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { minItems: 1, uniqueItems: true })) }),
+        execute: async (_id, params: AddSeriesParams) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { directAdd: true,
+            action: `Add Sonarr series ${params.tvdbId} ${JSON.stringify(params.title)} (${params.year}) root ${params.rootFolderPath} profile ${params.qualityProfileId} type=${params.seriesType} seasonFolder=${params.seasonFolder} seasons=${params.seasonNumbers ? JSON.stringify([...new Set(params.seasonNumbers)].sort((a, b) => a - b)) : "all_regular_and_future"} search=${params.search !== false}` });
+          if (policy) return policy;
+          return toolResponse(await clients().sonarr.additions.addSeries(params));
+        },
+      }),
+      defineTool({
+        name: "search_seerr_media", label: "Search Seerr media",
+        description: "Search compact paginated Seerr movie/TV identities and availability. Use the requesting Discord user's configured/linked Seerr account. Movie and TV IDs here are TMDB IDs, not TVDB IDs.",
+        parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 200 }), page: Type.Optional(Type.Integer({ minimum: 1 })) }),
+        execute: async (_id, params: { query: string; page?: number }) => toolResponse(await clients().seerr.search(params.query, params.page)),
+      }),
+      defineTool({
+        name: "get_seerr_media", label: "Inspect Seerr media and request state",
+        description: "Inspect exact movie/TV details, seasons, existing requests, approval and availability, and Arr IDs if known. Returns only compact non-secret fields and the Seerr media link. Verify identity and requested scope before submitting.",
+        parameters: Type.Object({ mediaType: Type.Union([Type.Literal("movie"), Type.Literal("tv")]), tmdbId: Type.Integer({ minimum: 1 }) }),
+        execute: async (_id, params: { mediaType: SeerrMediaType; tmdbId: number }) => toolResponse(await clients().seerr.getMedia(params.mediaType, params.tmdbId)),
+      }),
+      defineTool({
+        name: "get_seerr_request", label: "Check a Seerr request",
+        description: "Read one saved Seerr request ID as the mapped requester. Distinguishes pending approval, approved, failed, completed and actual media availability. Use media detail status if Seerr denies access to someone else's existing request.",
+        parameters: Type.Object({ requestId: Type.Integer({ minimum: 1 }) }),
+        execute: async (_id, params: { requestId: number }) => toolResponse(await clients().seerr.getRequest(params.requestId)),
+      }),
+      defineTool({
+        name: "request_seerr_media", label: "Request content through Seerr",
+        description: "Record a tracked Seerr movie/TV request as the server-resolved Discord requester; uses Seerr's own server/profile defaults, permissions, quotas and approval rules. Requires exact TMDB ID/title/year. For TV pass explicit seasons or allSeasons=true. Default is4k=false; use true only for an explicit 4K request. Avoids duplicate active requests and already available scope. Preserve returned request ID/link in the checkpoint. No user/account/approval/quota/server overrides are accepted. Bot repair role and confirmation rules also apply.",
+        parameters: Type.Object({ mediaType: Type.Union([Type.Literal("movie"), Type.Literal("tv")]), tmdbId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), is4k: Type.Optional(Type.Boolean()), seasons: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { minItems: 1, uniqueItems: true })), allSeasons: Type.Optional(Type.Boolean()) }),
+        execute: async (_id, params: SeerrRequestParams) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Request Seerr ${params.mediaType} ${params.tmdbId} ${JSON.stringify(params.title)} (${params.year}) for Discord user ${context.userId} is4k=${params.is4k === true} seasons=${params.allSeasons ? "all_regular" : JSON.stringify([...(params.seasons ?? [])].sort((a, b) => a - b))}` });
+          if (policy) return policy;
+          return toolResponse(await clients().seerr.requestMedia(params));
+        },
+      }),
       defineTool({
         name: "search_radarr_movies",
         label: "Search Radarr movies",
@@ -1975,4 +2043,11 @@ export function toolNamesForTask(task: Pick<ToolAgentTask, "toolProfile" | "inpu
   return isRecord(task.input) && task.input.plexRefreshBlocked === true
     ? names.filter((name) => name !== "refresh_plex_library_section")
     : names;
+}
+
+export function contentRequestRouting(settings: RuntimeSettings) {
+  const seerrConfigured = Boolean(settings.seerr?.url && settings.seerr.apiKey);
+  const seerrPreferred = seerrConfigured && settings.seerr.preferForRequests;
+  return { defaultProvider: seerrPreferred ? "seerr" : settings.repair.allowDirectAdd ? "direct_arr" : seerrConfigured ? "seerr" : "disabled",
+    seerrConfigured, seerrPreferred, directAddEnabled: settings.repair.allowDirectAdd === true };
 }

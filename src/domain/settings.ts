@@ -21,6 +21,21 @@ export const plexSettingsSchema = z.object({
   token: z.string().min(1).optional().or(z.literal("")),
 });
 
+export function parseSeerrUserMappings(value: string): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const entry of value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean)) {
+    const match = /^(\d{15,22})\s*:\s*([1-9]\d*)$/.exec(entry);
+    if (!match || !Number.isSafeInteger(Number(match[2])) || result.has(match[1]!)) throw new Error("Use unique DiscordID:SeerrUserID mappings, separated by commas or new lines");
+    result.set(match[1]!, Number(match[2]));
+  }
+  return result;
+}
+
+export const seerrUserMappingsSchema = z.string().trim().max(20000).superRefine((value, context) => {
+  try { parseSeerrUserMappings(value); } catch { context.addIssue({ code: "custom", message: "Use unique DiscordID:SeerrUserID mappings, separated by commas or new lines" }); }
+});
+export type SeerrSettings = { url: string; apiKey: string; preferForRequests: boolean; userMappings: string; defaultUserId: number };
+
 export const aiSettingsSchema = z.object({
   provider: z.string().default("openai-codex"),
   modelProvider: z.string().default("openai-codex"),
@@ -37,6 +52,7 @@ export const timeoutSettingsSchema = z.object({
 export const repairSettingsSchema = z.object({
   requireConfirmation: z.boolean().default(true),
   allowDestructive: z.boolean().default(false),
+  allowDirectAdd: z.boolean().default(false),
 });
 
 export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
@@ -51,6 +67,7 @@ export type RuntimeSettings = {
   sonarr: ArrSettings;
   radarr: ArrSettings;
   plex: PlexSettings;
+  seerr: SeerrSettings;
   ai: AiSettings;
   timeouts: TimeoutSettings;
   repair: RepairSettings;
@@ -82,6 +99,13 @@ export function readRuntimeSettings(store: SettingsStore): RuntimeSettings {
     plex: {
       url: store.getString("plex.url") ?? "",
       token: store.getString("plex.token") ?? "",
+    },
+    seerr: {
+      url: store.getString("seerr.url") ?? "",
+      apiKey: store.getString("seerr.apiKey") ?? "",
+      preferForRequests: store.getString("seerr.preferForRequests") !== "false",
+      userMappings: store.getString("seerr.userMappings") ?? "",
+      defaultUserId: Number(store.getString("seerr.defaultUserId")) || 0,
     },
     ai: readJsonSetting(store, "ai", aiSettingsSchema, DEFAULT_AI_SETTINGS),
     timeouts: readJsonSetting(store, "timeouts", timeoutSettingsSchema, DEFAULT_TIMEOUT_SETTINGS),

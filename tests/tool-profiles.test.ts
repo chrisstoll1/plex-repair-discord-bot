@@ -3,6 +3,9 @@ import test from "node:test";
 import { TOOL_PROFILES, isRepairToolProfile, toolProfileNames } from "../src/agent/tool-profiles.js";
 
 const WRITE_TOOLS = new Set([
+  "add_radarr_movie",
+  "add_sonarr_series",
+  "request_seerr_media",
   "trigger_radarr_movie_search",
   "refresh_plex_library_section",
   "split_plex_movie",
@@ -32,7 +35,7 @@ const WRITE_TOOLS = new Set([
 ]);
 
 test("read-only profiles contain no repair tools", () => {
-  for (const profile of ["sonarr_agent", "radarr_agent", "plex_agent"] as const) {
+  for (const profile of ["sonarr_agent", "radarr_agent", "plex_agent", "seerr_agent"] as const) {
     assert.equal(TOOL_PROFILES[profile].some((tool) => WRITE_TOOLS.has(tool)), false, profile);
     assert.equal(isRepairToolProfile(profile), false);
   }
@@ -41,7 +44,7 @@ test("read-only profiles contain no repair tools", () => {
 
 test("repair profiles expose every write tool once and remain service-scoped", () => {
   const repairProfiles = toolProfileNames().filter(isRepairToolProfile);
-  assert.deepEqual(repairProfiles.sort(), ["plex_repair_agent", "radarr_repair_agent", "sonarr_repair_agent"]);
+  assert.deepEqual(repairProfiles.sort(), ["plex_repair_agent", "radarr_repair_agent", "seerr_request_agent", "sonarr_repair_agent"]);
 
   const exposedWrites = repairProfiles.flatMap((profile) => TOOL_PROFILES[profile].filter((tool) => WRITE_TOOLS.has(tool)));
   assert.deepEqual(new Set(exposedWrites), WRITE_TOOLS);

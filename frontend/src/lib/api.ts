@@ -13,6 +13,7 @@ export type Settings = {
   sonarr: { url: string; apiKey: SecretValue };
   radarr: { url: string; apiKey: SecretValue };
   plex: { url: string; token: SecretValue };
+  seerr: { url: string; apiKey: SecretValue; preferForRequests: boolean; userMappings: string; defaultUserId: number };
   ai: {
     modelProvider: string;
     modelId: string;
@@ -20,15 +21,16 @@ export type Settings = {
     serviceTier: "default" | "priority";
   };
   timeouts: { standardSeconds: number; releaseLookupSeconds: number };
-  repair: { requireConfirmation: boolean; allowDestructive: boolean };
+  repair: { requireConfirmation: boolean; allowDestructive: boolean; allowDirectAdd: boolean };
 };
 
 type SecretUpdate = { action: "keep" } | { action: "clear" } | { action: "replace"; value: string };
-type SettingsUpdate = Omit<Settings, "discord" | "sonarr" | "radarr" | "plex"> & {
+type SettingsUpdate = Omit<Settings, "discord" | "sonarr" | "radarr" | "plex" | "seerr"> & {
   discord: Omit<Settings["discord"], "token"> & { token: SecretUpdate };
   sonarr: Omit<Settings["sonarr"], "apiKey"> & { apiKey: SecretUpdate };
   radarr: Omit<Settings["radarr"], "apiKey"> & { apiKey: SecretUpdate };
   plex: Omit<Settings["plex"], "token"> & { token: SecretUpdate };
+  seerr: Omit<Settings["seerr"], "apiKey"> & { apiKey: SecretUpdate };
 };
 export type ServiceState = "connected" | "configured" | "missing" | "error" | "unknown";
 export type ServiceStatus = { name: string; state: ServiceState; detail?: string; latencyMs?: number; checkedAt?: string };
@@ -169,6 +171,7 @@ function toSettingsUpdate(settings: Settings): SettingsUpdate {
     sonarr: { ...settings.sonarr, apiKey: toSecretUpdate(settings.sonarr.apiKey) },
     radarr: { ...settings.radarr, apiKey: toSecretUpdate(settings.radarr.apiKey) },
     plex: { ...settings.plex, token: toSecretUpdate(settings.plex.token) },
+    seerr: { ...settings.seerr, apiKey: toSecretUpdate(settings.seerr.apiKey) },
   };
 }
 
