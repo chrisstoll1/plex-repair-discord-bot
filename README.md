@@ -121,7 +121,7 @@ In a server, mention the bot with a request:
 
 The bot creates a public thread from the request. Messages from any participant in that active thread are included without another mention, and each Discord thread is constrained to one durable repair case. Each participant's current Discord roles are checked for repairs requested on their behalf. Separate issue threads can work concurrently.
 
-When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks resume work after successful imports or related manual-interaction events. A single two-hour watchdog check prevents a missed event from leaving a repair waiting indefinitely; disabling an integration converts affected waits to a shorter delayed check.
+When confirmation is disabled, an ongoing case may diagnose, repair, verify, wait, and resume until it succeeds or reaches a real blocker. Healthy configured webhooks resume work after successful imports or related manual-interaction events. A two-hour fallback check catches missed events. For unreleased media with an exact service release timestamp, the fallback waits until one hour after availability; matching events can still resume the case earlier. Unchanged automatic checks stay quiet, back off to at most one check per day, and do not spend repair attempts. Release waits retain a seven-day verification window after the expected release. Disabling an integration converts its event waits to timers while preserving these planned check times. New user messages still receive a response, and changed wait states or final results produce updates.
 
 ## Configuration and Data
 

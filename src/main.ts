@@ -119,6 +119,7 @@ const repairCaseService = new RepairCaseService(repairCases, {
         : { type: "timer" as const, dueAt: normalizeResumeAt(control.resumeAt) };
       return {
         wake,
+        externalWait: control.externalWait,
         checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt, ...(plexVerification ? { plexVerification: plexVerification.state } : {}) },
         activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake } },
         deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:wait` }],
