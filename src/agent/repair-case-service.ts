@@ -26,6 +26,7 @@ export type RepairCaseRunResult = {
   wake?: RepairCaseWake;
   externalWait?: ExternalWait;
   activity?: { kind: string; details?: unknown };
+  /** Delivery keys are scoped to this run; retries retain the persisted outbox entry. */
   deliveries?: Array<{ kind: string; payload: unknown; dedupeKey?: string }>;
 };
 
@@ -210,6 +211,14 @@ export class RepairCaseService {
   }
 
   private async run(id: string): Promise<void> {
+    // Attempt counts can reset on reopen or be refunded after quiet monitoring.
+    // Keep notification identity independent of that repair budget.
+    const runKey = `${id}:run:${crypto.randomUUID()}`;
+    const enqueueDelivery = (delivery: NonNullable<RepairCaseRunResult["deliveries"]>[number]) => {
+      this.store.enqueueDelivery(id, delivery.kind, delivery.payload, {
+        dedupeKey: delivery.dedupeKey === undefined ? undefined : `${runKey}:${delivery.dedupeKey}`,
+      });
+    };
     const latestActivity = this.store.latestActivity(id);
     const resume = resumeContext(latestActivity);
     const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
@@ -218,7 +227,7 @@ export class RepairCaseService {
     if (!repairCase) {
       const current = this.store.get(id);
       if (current?.status === "exhausted") {
-        await this.reportSystemEvent(current, { type: "attempts_exhausted" }, `${id}:exhausted`);
+        await this.reportSystemEvent(current, { type: "attempts_exhausted" }, `${runKey}:exhausted`);
         await this.flushDeliveries();
       }
       return;
@@ -268,7 +277,7 @@ export class RepairCaseService {
           this.store.releaseLease(id, this.ownerId, "ready");
         } else if (timedOut) {
           this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
-          await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
+          await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${runKey}:timeout`);
           await this.flushDeliveries();
           runAgain = true;
         } else if (this.pendingMessages.delete(id)) {
@@ -308,12 +317,12 @@ export class RepairCaseService {
             this.store.addActivity(id, "wait_unchanged", { externalWait: readExternalWait(result.checkpoint), notificationSuppressed: true }, this.ownerId);
           } else {
             if (result.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
-            for (const delivery of result.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
+            for (const delivery of result.deliveries ?? []) enqueueDelivery(delivery);
           }
         }
       } else {
         if (result?.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
-        for (const delivery of result?.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
+        for (const delivery of result?.deliveries ?? []) enqueueDelivery(delivery);
         const status = result?.status ?? "needs_input";
         const transitioned = this.store.transition(id, status, { from: ["working", "verifying"], checkpoint: result?.checkpoint, actor: this.ownerId });
         runAgain = transitioned?.status === "ready" || transitioned?.status === "verifying";
@@ -325,7 +334,7 @@ export class RepairCaseService {
       if (this.stopping) this.store.releaseLease(id, this.ownerId, "ready");
       else if (timedOut) {
         this.store.transition(id, "ready", { from: ["working", "verifying"], actor: this.ownerId, details: { reason: "runner_timeout" } });
-        await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${id}:attempt:${current.attempts}:timeout`);
+        await this.reportSystemEvent(this.store.get(id)!, { type: "timeout_continuing" }, `${runKey}:timeout`);
         runAgain = true;
       } else if (controller.signal.aborted && this.pendingMessages.delete(id)) {
         this.store.addActivity(id, "rerun_requested", { reason: "new_thread_message" }, this.ownerId);
@@ -338,7 +347,7 @@ export class RepairCaseService {
           ...(error instanceof AiAuthenticationError ? { errorCode: "ai_authentication" } : {}),
         };
         this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details });
-        await this.reportSystemEvent(this.store.get(id)!, { type: "runner_error", details }, `${id}:attempt:${current.attempts}:error`);
+        await this.reportSystemEvent(this.store.get(id)!, { type: "runner_error", details }, `${runKey}:error`);
       }
     } finally {
       clearTimeout(timeout);
@@ -348,7 +357,7 @@ export class RepairCaseService {
           this.store.releaseLease(id, this.ownerId, "ready");
         } else {
           this.store.transition(id, "blocked", { from: ["working", "verifying"], actor: this.ownerId, details: { error: "runner_ended_without_state" } });
-          await this.reportSystemEvent(this.store.get(id)!, { type: "unexpected_end" }, `${id}:attempt:${current.attempts}:unexpected-end`);
+          await this.reportSystemEvent(this.store.get(id)!, { type: "unexpected_end" }, `${runKey}:unexpected-end`);
         }
       }
       this.controllers.delete(id);

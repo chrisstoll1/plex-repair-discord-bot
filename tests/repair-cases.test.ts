@@ -267,7 +267,7 @@ test("release monitoring survives restart, waits past the old expiry, and stays 
           externalWait: wait,
           checkpoint: { summary: "Still waiting for the release" },
           activity: { kind: "waiting", details: { userUpdate: `Waiting update ${runs}` } },
-          deliveries: [{ kind: "discord_message", payload: `Waiting update ${runs}` }],
+          deliveries: [{ kind: "discord_message", payload: `Waiting update ${runs}`, dedupeKey: "wait" }],
         };
       },
       onDelivery: async (delivery) => { delivered.push(delivery.payload); },
@@ -335,7 +335,7 @@ test("release waits answer user follow-ups, accept early downloads, notify chang
       return {
         wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
         externalWait: { reason: context.resume ? "import" : "release", availableAt: context.resume ? undefined : "2026-11-18T00:00:00Z", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
-        deliveries: [{ kind: "discord_message", payload: context.resume ? "Import needs attention" : "Waiting for release" }],
+        deliveries: [{ kind: "discord_message", payload: context.resume ? "Import needs attention" : "Waiting for release", dedupeKey: "wait" }],
       };
     },
     onDelivery: async (delivery) => { delivered.push(delivery.payload); },
@@ -546,6 +546,88 @@ test("a new thread message reopens a completed repair without another mention", 
   assert.equal(store.listMessages(repairCase.id).at(-1)?.sourceMessageId, "follow-up");
   assert.equal(store.listActivity(repairCase.id).some((entry) => entry.kind === "status_changed" && (entry.details as { reason?: string }).reason === "new_thread_message"), true);
   await service.shutdown();
+});
+
+test("reopened repairs deliver a new final reply after restart even when attempts and timestamps repeat", async (t) => {
+  const now = new Date("2026-11-14T12:00:00.000Z");
+  const fixture = createFixture(t);
+  let db = fixture.open();
+  let store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("reopened-final-reply"));
+  const delivered: unknown[] = [];
+  const attempts: number[] = [];
+  for (let run = 1; run <= 2; run += 1) {
+    const service = new RepairCaseService(store, {
+      now: () => now,
+      ownerId: "same-process-owner",
+      runner: async (current) => {
+        attempts.push(current.attempts);
+        return { status: "resolved", deliveries: [{ kind: "discord_message", payload: `Result ${run}`, dedupeKey: "finish" }] };
+      },
+      onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+    });
+    service.start();
+    if (run > 1) service.notifyNewMessage(repairCase.id, { content: "Check again", sourceMessageId: `follow-up-${run}` });
+    await waitUntil(() => store.get(repairCase.id)?.status === "resolved");
+    await service.shutdown();
+    assert.deepEqual(delivered, Array.from({ length: run }, (_, index) => `Result ${index + 1}`));
+    if (run === 1) {
+      db.close();
+      db = fixture.open();
+      store = new RepairCaseStore(db, () => now);
+    }
+  }
+  assert.deepEqual(attempts, [1, 1]);
+});
+
+test("delivery retries after restart reuse the queued reply instead of creating another message", async (t) => {
+  let now = new Date("2026-11-14T12:00:00.000Z");
+  const fixture = createFixture(t);
+  let db = fixture.open();
+  let store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("retry-final-reply"));
+  const deliveryIds: number[] = [];
+  let service = new RepairCaseService(store, {
+    now: () => now,
+    runner: async () => ({ status: "resolved", deliveries: [{ kind: "discord_message", payload: "Complete", dedupeKey: "finish" }] }),
+    onDelivery: async (delivery) => { deliveryIds.push(delivery.id); throw new Error("Temporary Discord failure"); },
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "resolved" && deliveryIds.length === 1);
+  await service.shutdown();
+  db.close();
+  db = fixture.open();
+  store = new RepairCaseStore(db, () => now);
+  now = new Date(Date.parse(store.nextDeliveryDueAt()!) + 1);
+  service = new RepairCaseService(store, {
+    now: () => now,
+    runner: async () => { assert.fail("A delivery retry must not rerun the repair"); },
+    onDelivery: async (delivery) => { deliveryIds.push(delivery.id); },
+  });
+  service.start();
+  await waitUntil(() => deliveryIds.length === 2);
+  await service.shutdown();
+  assert.equal(deliveryIds[0], deliveryIds[1]);
+  assert.equal(store.nextDeliveryDueAt(), undefined);
+});
+
+test("runner errors still notify after a repair is reopened and reuses an attempt number", async (t) => {
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db);
+  const repairCase = store.create(caseParams("reopened-error-reply"));
+  const delivered: unknown[] = [];
+  for (let run = 1; run <= 2; run += 1) {
+    const service = new RepairCaseService(store, {
+      runner: async () => { throw new Error("Provider unavailable"); },
+      onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+    });
+    service.start();
+    if (run > 1) service.notifyNewMessage(repairCase.id, { content: "Check again", sourceMessageId: "error-follow-up" });
+    await waitUntil(() => store.get(repairCase.id)?.status === "blocked");
+    await service.shutdown();
+    assert.equal(delivered.length, run);
+    store.transition(repairCase.id, "resolved", { from: ["blocked"] });
+  }
 });
 
 test("runner failures retain provider diagnostics in repair activity without exposing them to Discord", async (t) => {
