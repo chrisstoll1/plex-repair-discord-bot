@@ -277,6 +277,17 @@ export class RepairCaseStore {
     })();
   }
 
+  saveWaitCheckpoint(id: string, owner: string, checkpoint: unknown, options: { refundAttempt: boolean; availableAt?: string }): void {
+    // A successful unchanged check is monitoring, rather than another failed repair.
+    // Keep the original expiry unless a known release needs a verification window.
+    const releaseExpiry = options.availableAt
+      ? new Date(Date.parse(options.availableAt) + CASE_LIFETIME_MS).toISOString()
+      : "";
+    this.db.prepare(`UPDATE repair_cases SET checkpoint_json = ?, attempts = MAX(0, attempts - ?),
+      expires_at = MAX(expires_at, ?) WHERE id = ? AND lease_owner = ? AND status IN ('working','verifying')`)
+      .run(json(checkpoint), options.refundAttempt ? 1 : 0, releaseExpiry, id, owner);
+  }
+
   resume(id: string, actor?: string): RepairCase | undefined {
     return this.db.transaction(() => {
       const result = this.transition(id, "ready", { from: ["waiting", "needs_input", "blocked"], actor });
@@ -399,15 +410,19 @@ export class RepairCaseStore {
     return this.db.transaction(() => {
       const now = this.timestamp();
       const due = timestamp(dueAt);
-      const result = this.db.prepare(`UPDATE repair_case_wakes SET type = 'timer', due_at = ?, provider = NULL,
-        event_type = NULL, media_id = NULL, created_at = ? WHERE type = 'arr_event' AND provider = ?`)
-        .run(due, now, provider);
-      if (result.changes > 0) {
-        this.db.prepare(`INSERT INTO repair_case_activity (case_id, kind, actor, details_json, created_at)
-          SELECT case_id, 'provider_disabled', 'system', ?, ? FROM repair_case_wakes WHERE type = 'timer' AND due_at = ?`)
-          .run(json({ provider, reason: "integration_disabled", dueAt: due }), now, due);
+      const rows = this.db.prepare(`SELECT w.*, c.checkpoint_json FROM repair_case_wakes w
+        JOIN repair_cases c ON c.id = w.case_id WHERE w.type = 'arr_event' AND w.provider = ?`).all(provider) as Array<WakeRow & { checkpoint_json: string | null }>;
+      for (const row of rows) {
+        const checkpoint = parseJson(row.checkpoint_json) as { externalWait?: { nextCheckAt?: string } } | undefined;
+        // Disabling an integration must not move a release-aware or backed-off check earlier.
+        const plannedAt = checkpoint?.externalWait?.nextCheckAt;
+        const convertedDue = plannedAt && Number.isFinite(Date.parse(plannedAt)) && plannedAt > due ? plannedAt : due;
+        this.db.prepare(`UPDATE repair_case_wakes SET type = 'timer', due_at = ?, provider = NULL,
+          event_type = NULL, media_id = NULL, media_ids_json = NULL, created_at = ? WHERE id = ?`)
+          .run(convertedDue, now, row.id);
+        this.insertActivity(row.case_id, "provider_disabled", "system", { provider, reason: "integration_disabled", dueAt: convertedDue }, now);
       }
-      return result.changes;
+      return rows.length;
     })();
   }
 
@@ -473,7 +488,7 @@ export class RepairCaseStore {
     })();
   }
 
-  claimRunnable(id: string, owner: string, leaseMs: number): RepairCase | undefined {
+  claimRunnable(id: string, owner: string, leaseMs: number, options: { monitoring?: boolean } = {}): RepairCase | undefined {
     return this.db.transaction(() => {
       const now = this.timestamp();
       const current = this.get(id);
@@ -482,7 +497,9 @@ export class RepairCaseStore {
         this.transition(id, "exhausted", { actor: owner, details: { reason: "expired" } });
         return undefined;
       }
-      if (current.attempts >= current.maxAttempts) {
+      // Permit one monitoring check at the budget boundary. An unchanged result
+      // refunds it; a failure or changed result spends it and remains bounded.
+      if (current.attempts >= current.maxAttempts && !(options.monitoring && current.attempts === current.maxAttempts)) {
         this.transition(id, "exhausted", { actor: owner, details: { reason: "attempt_limit" } });
         return undefined;
       }

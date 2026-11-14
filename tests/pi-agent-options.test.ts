@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { AiAuthenticationError, ModelUnavailableError } from "../src/agent/model-errors.js";
-import { applyOpenAiCodexServiceTier, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel } from "../src/agent/pi-agent.js";
+import { PiAgentService, applyOpenAiCodexServiceTier, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel, type AgentRequestContext, type RepairCaseControlResult } from "../src/agent/pi-agent.js";
 
 test("priority service tier is added only to OpenAI Codex payloads", () => {
   const payload = { model: "gpt-5.6-sol", stream: true };
@@ -33,6 +33,32 @@ test("resumed repairs emit only one task progress update", () => {
   assert.equal(repairProgressLimit(), 2);
   assert.equal(repairProgressLimit({ source: "webhook" }), 1);
   assert.equal(repairProgressLimit({ source: "timer" }), 1);
+});
+
+test("external wait tool carries release metadata through both event and timer routes", async () => {
+  const store = { getString: () => undefined, getJson: (_key: string, fallback: unknown) => fallback };
+  const service = new PiAgentService({} as never, store as never);
+  for (const webhookProviders of [["sonarr"], []] as Array<Array<"sonarr" | "radarr">>) {
+    let result: RepairCaseControlResult | undefined;
+    const context: AgentRequestContext = {
+      roles: [], userId: "user", channelId: "channel",
+      caseControl: { webhookProviders, history: [], setResult: (value) => { result = value; } },
+    };
+    const tool = service["createOrchestrationTools"](context).find((item) => item.name === "wait_for_external_progress")!;
+    const availableAt = new Date(Date.now() + 10 * 86_400_000).toISOString();
+    const params = { reason: "release", availableAt, provider: "sonarr", eventType: "Download", mediaIds: ["episode:42"], userUpdate: "Waiting for release", checkpoint: "Exact episode is monitored" };
+    await tool.execute("wait-42", params as never);
+    assert.ok(result?.type === "wait");
+    assert.equal(result.externalWait?.availableAt, availableAt);
+    assert.equal(result.externalWait?.reason, "release");
+    assert.deepEqual(result.externalWait?.mediaIds, ["episode:42"]);
+    assert.equal(result.externalWait?.eventType, "download");
+    assert.equal(result.provider, webhookProviders.length ? "sonarr" : undefined);
+    assert.equal(result.resumeAt, webhookProviders.length ? undefined : availableAt);
+    result = undefined;
+    await assert.rejects(tool.execute("bad-date", { ...params, availableAt: "2026-11-18" } as never), /ISO timestamp/);
+    assert.equal(result, undefined);
+  }
 });
 
 type AssistantMessage = Extract<AgentSession["messages"][number], { role: "assistant" }>;

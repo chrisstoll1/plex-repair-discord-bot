@@ -27,6 +27,7 @@ import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRU
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import { classifyAiRequestError, ModelUnavailableError } from "./model-errors.js";
+import { normalizeExternalWait, type ExternalWait } from "./external-wait.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
 
@@ -46,7 +47,7 @@ export type AgentRequestContext = {
 };
 
 export type RepairCaseControlResult =
-  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string; waitReason?: "external_progress" | "plex_indexing"; missingMedia?: string[] }
+  | { type: "wait"; userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string; waitReason?: "external_progress" | "plex_indexing"; missingMedia?: string[]; externalWait?: ExternalWait }
   | { type: "finish"; status: "resolved" | "needs_input" | "blocked"; userUpdate: string; checkpoint: string };
 
 export type RepairCaseControl = {
@@ -646,10 +647,12 @@ export class PiAgentService {
         defineTool({
           name: "wait_for_external_progress",
           label: "Wait for external progress",
-          description: "Suspend this repair until a covered Sonarr/Radarr event occurs, or until a time when no event integration covers the expected change.",
+          description: "Suspend this repair for a covered Sonarr/Radarr event, with quiet fallback monitoring if an event is missed, or use a timed check when no integration covers the change. Release metadata delays fallback checks until after availability.",
           parameters: Type.Object({
             userUpdate: Type.String({ description: "Short plain-language update for the user explaining what is happening and that work will continue automatically", maxLength: 500 }),
             checkpoint: Type.String({ description: "Compact internal summary of findings, actions, IDs, expected outcome, and next verification step", maxLength: 6000 }),
+            reason: Type.Union([Type.Literal("release"), Type.Literal("download"), Type.Literal("import"), Type.Literal("availability"), Type.Literal("external_progress")], { description: "Current external blocker: release for unaired/unreleased media, download for an active download, import for pending import, availability for released media awaiting a source, or external_progress for another external change" }),
+            availableAt: Type.Optional(Type.String({ description: "Required for reason=release: exact ISO timestamp with timezone from service metadata (Sonarr airDateUtc or Radarr release metadata). Never invent a time from a date-only value. The server checks after this time plus a grace period while still accepting early download events." })),
             provider: Type.Optional(Type.Union([Type.Literal("sonarr"), Type.Literal("radarr")])),
             eventType: Type.Optional(Type.String({ description: "Normalized webhook event type to wait for, such as download or grab" })),
             mediaId: Type.Optional(Type.String({ description: "Provider-qualified media key such as episode:123, series:45, or movie:67" })),
@@ -657,14 +660,17 @@ export class PiAgentService {
             completionPolicy: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("all")], { description: "Use all when every listed media ID must report progress before resuming" })),
             resumeAt: Type.Optional(Type.String({ description: "ISO timestamp for a timed resume. Use only when no available event integration covers the expected change." })),
           }),
-          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string }) => {
+          execute: async (_toolCallId, params: { userUpdate: string; checkpoint: string; provider?: "sonarr" | "radarr"; eventType?: string; mediaId?: string; mediaIds?: string[]; completionPolicy?: "any" | "all"; resumeAt?: string; reason: ExternalWait["reason"]; availableAt?: string }) => {
             const eventAvailable = params.provider && context.caseControl!.webhookProviders.includes(params.provider);
             const mediaIds = [...new Set([...(params.mediaIds ?? []), ...(params.mediaId ? [params.mediaId] : [])])];
             if (eventAvailable && (!params.eventType || mediaIds.length === 0)) throw new Error("An event wait requires eventType and at least one media ID");
-            if (!eventAvailable && !params.resumeAt) throw new Error("A timed resumeAt is required when no matching event integration is available");
+            const externalWait = normalizeExternalWait({ reason: params.reason, availableAt: params.availableAt, provider: params.provider,
+              eventType: params.eventType ? normalizeEventType(params.eventType) : undefined, mediaIds,
+              completionPolicy: params.completionPolicy ?? (mediaIds.length > 1 ? "all" : "any") });
+            if (!eventAvailable && !params.resumeAt && !externalWait.availableAt) throw new Error("A timed resumeAt is required when no matching event integration is available");
             const result: RepairCaseControlResult = eventAvailable
-              ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaIds, completionPolicy: params.completionPolicy ?? (mediaIds.length > 1 ? "all" : "any") }
-              : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt, waitReason: "external_progress" };
+              ? { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, provider: params.provider, eventType: normalizeEventType(params.eventType!), mediaIds, completionPolicy: externalWait.completionPolicy, externalWait }
+              : { type: "wait", userUpdate: params.userUpdate, checkpoint: params.checkpoint, resumeAt: params.resumeAt ?? externalWait.availableAt, waitReason: "external_progress", externalWait };
             context.caseControl!.setResult(result);
             return toolResponse({ accepted: true, wake: eventAvailable ? "event" : "time" });
           },

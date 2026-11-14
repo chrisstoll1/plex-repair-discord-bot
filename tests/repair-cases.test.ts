@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import type { AppConfig } from "../src/config.js";
 import { RepairCaseService } from "../src/agent/repair-case-service.js";
+import { readExternalWait, type ExternalWait } from "../src/agent/external-wait.js";
 import { AiAuthenticationError, ModelUnavailableError } from "../src/agent/model-errors.js";
 import { openDatabase, type AppDatabase } from "../src/storage/db.js";
 import { RepairCaseStore, type CreateRepairCase } from "../src/storage/repair-cases.js";
@@ -244,6 +245,136 @@ test("legacy event waits receive an immediate watchdog without silently expiring
   assert.equal(store.get(repairCase.id)?.expiresAt, "2026-07-25T12:00:00.000Z");
   assert.deepEqual(store.claimDueTimers().map((item) => item.id), [repairCase.id]);
   assert.equal((store.latestActivity(repairCase.id)?.details as { reason?: string }).reason, "webhook_fallback");
+});
+
+test("release monitoring survives restart, waits past the old expiry, and stays quiet without spending repair attempts", async (t) => {
+  let now = new Date("2026-11-14T12:00:00.000Z");
+  const fixture = createFixture(t);
+  let db = fixture.open();
+  let store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create({ ...caseParams("future-release"), maxAttempts: 1 });
+  let wait: ExternalWait = { reason: "release", availableAt: "2026-11-30T00:00:00Z", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] };
+  const delivered: unknown[] = [];
+  let runs = 0;
+  const startService = () => {
+    const service = new RepairCaseService(store, {
+      now: () => now,
+      runner: async (_current, context) => {
+        runs += 1;
+        if (context.resume?.source === "timer") await context.progress("Checking again with different wording.");
+        return {
+          wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
+          externalWait: wait,
+          checkpoint: { summary: "Still waiting for the release" },
+          activity: { kind: "waiting", details: { userUpdate: `Waiting update ${runs}` } },
+          deliveries: [{ kind: "discord_message", payload: `Waiting update ${runs}` }],
+        };
+      },
+      onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+    });
+    service.start();
+    return service;
+  };
+  let service = startService();
+  await waitUntil(() => store.get(repairCase.id)?.status === "waiting" && delivered.length === 1);
+  await service.shutdown();
+  assert.equal(store.get(repairCase.id)?.expiresAt, "2026-12-07T00:00:00.000Z");
+  assert.equal(store.nextTimerDueAt(), "2026-11-30T01:00:00.000Z");
+
+  db.close();
+  db = fixture.open();
+  store = new RepairCaseStore(db, () => now);
+  now = new Date("2026-11-25T12:00:00.000Z");
+  service = startService();
+  assert.equal(store.get(repairCase.id)?.status, "waiting");
+  assert.deepEqual(store.claimDueTimers(), []);
+  assert.equal(runs, 1);
+  await service.shutdown();
+
+  for (let check = 1; check <= 5; check += 1) {
+    now = new Date(store.nextTimerDueAt()!);
+    assert.equal(store.claimDueTimers().length, 1);
+    service = startService();
+    await waitUntil(() => store.get(repairCase.id)?.status === "waiting");
+    await service.shutdown();
+    assert.equal(readExternalWait(store.get(repairCase.id)?.checkpoint)?.unchangedChecks, check);
+    assert.equal(store.get(repairCase.id)?.attempts, 1);
+    assert.deepEqual(delivered, ["Waiting update 1"]);
+  }
+  assert.equal(store.listActivity(repairCase.id).filter((entry) => entry.kind === "wait_unchanged").length, 5);
+
+  // A changed release date must notify and reset the backoff, even on a fallback check.
+  now = new Date(store.nextTimerDueAt()!);
+  store.claimDueTimers();
+  wait = { ...wait, availableAt: "2026-12-05T00:00:00Z" };
+  service = startService();
+  await waitUntil(() => delivered.length === 2);
+  await service.shutdown();
+  assert.deepEqual(delivered, ["Waiting update 1", "Waiting update 7"]);
+  assert.equal(store.nextTimerDueAt(), "2026-12-05T01:00:00.000Z");
+  assert.equal(readExternalWait(store.get(repairCase.id)?.checkpoint)?.unchangedChecks, 0);
+  assert.equal(store.get(repairCase.id)?.expiresAt, "2026-12-12T00:00:00.000Z");
+  now = new Date("2026-12-13T00:00:00Z");
+  assert.equal(store.expireCases(), 1);
+  assert.equal(store.get(repairCase.id)?.status, "exhausted");
+  assert.equal(store.getWake(repairCase.id), undefined);
+});
+
+test("release waits answer user follow-ups, accept early downloads, notify changes, and stop future checks", async (t) => {
+  const now = new Date("2026-11-14T12:00:00.000Z");
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("early-release-event"));
+  const delivered: unknown[] = [];
+  let runs = 0;
+  const service = new RepairCaseService(store, {
+    now: () => now,
+    runner: async (_current, context) => {
+      runs += 1;
+      if (runs === 4) return { status: "blocked", deliveries: [{ kind: "discord_message", payload: "Stopped" }] };
+      return {
+        wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
+        externalWait: { reason: context.resume ? "import" : "release", availableAt: context.resume ? undefined : "2026-11-18T00:00:00Z", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
+        deliveries: [{ kind: "discord_message", payload: context.resume ? "Import needs attention" : "Waiting for release" }],
+      };
+    },
+    onDelivery: async (delivery) => { delivered.push(delivery.payload); },
+  });
+  t.after(() => service.shutdown());
+  service.start();
+  await waitUntil(() => delivered.length === 1);
+  service.notifyNewMessage(repairCase.id, { content: "Any update?", sourceMessageId: "follow-up-42" });
+  await waitUntil(() => delivered.length === 2);
+  assert.deepEqual(delivered, ["Waiting for release", "Waiting for release"]);
+  assert.deepEqual(service.receiveEvent({ provider: "sonarr", eventId: "early-download", eventType: "download", mediaId: "episode:42" }).matchedCaseIds, [repairCase.id]);
+  await waitUntil(() => delivered.length === 3);
+  assert.deepEqual(delivered, ["Waiting for release", "Waiting for release", "Import needs attention"]);
+  service.notifyNewMessage(repairCase.id, { content: "Stop", sourceMessageId: "stop-42" });
+  await waitUntil(() => store.get(repairCase.id)?.status === "blocked");
+  assert.equal(store.getWake(repairCase.id), undefined);
+  assert.deepEqual(service.receiveEvent({ provider: "sonarr", eventId: "later-download", eventType: "download", mediaId: "episode:42" }).matchedCaseIds, []);
+  assert.equal(runs, 4);
+  await service.shutdown();
+});
+
+test("disabling an event integration preserves a structured wait's planned check time", async (t) => {
+  const now = new Date("2026-11-14T12:00:00Z");
+  const { db } = openFixture(t);
+  const store = new RepairCaseStore(db, () => now);
+  const repairCase = store.create(caseParams("disable-before-release"));
+  const service = new RepairCaseService(store, {
+    now: () => now,
+    runner: async () => ({
+      wake: { type: "arr_event", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
+      externalWait: { reason: "release", availableAt: "2026-11-18T00:00:00Z", provider: "sonarr", eventType: "download", mediaIds: ["episode:42"] },
+    }),
+  });
+  service.start();
+  await waitUntil(() => store.get(repairCase.id)?.status === "waiting");
+  await service.shutdown();
+  assert.equal(store.replaceProviderWakesWithTimers("sonarr", "2026-11-14T12:15:00Z"), 1);
+  assert.equal(store.getWake(repairCase.id)?.type, "timer");
+  assert.equal(store.nextTimerDueAt(), "2026-11-18T01:00:00.000Z");
 });
 
 test("an event received during work reruns immediately without sending a stale waiting update", async (t) => {

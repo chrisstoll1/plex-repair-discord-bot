@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Logger } from "pino";
 import { AiAuthenticationError, ModelUnavailableError } from "./model-errors.js";
+import { planExternalWait, readExternalWait, type ExternalWait } from "./external-wait.js";
 import {
   RepairCaseStore,
   type InboundArrEvent,
@@ -23,6 +24,7 @@ export type RepairCaseRunResult = {
   status?: Exclude<RepairCaseStatus, "working">;
   checkpoint?: unknown;
   wake?: RepairCaseWake;
+  externalWait?: ExternalWait;
   activity?: { kind: string; details?: unknown };
   deliveries?: Array<{ kind: string; payload: unknown; dedupeKey?: string }>;
 };
@@ -49,6 +51,7 @@ export type RepairCaseServiceOptions = {
   maxRuntimeMs?: number;
   ownerId?: string;
   logger?: Logger;
+  now?: () => Date;
 };
 
 const DEFAULT_LEASE_MS = 31 * 60_000;
@@ -210,7 +213,8 @@ export class RepairCaseService {
     const latestActivity = this.store.latestActivity(id);
     const resume = resumeContext(latestActivity);
     const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
-    const repairCase = this.store.claimRunnable(id, this.ownerId, leaseMs);
+    const monitoring = resume?.source === "timer" && Boolean(readExternalWait(this.store.get(id)?.checkpoint));
+    const repairCase = this.store.claimRunnable(id, this.ownerId, leaseMs, { monitoring });
     if (!repairCase) {
       const current = this.store.get(id);
       if (current?.status === "exhausted") {
@@ -224,6 +228,7 @@ export class RepairCaseService {
     let timedOut = false;
     let runAgain = false;
     const progressMessages = new Set<string>();
+    const quietFallback = resume?.source === "timer" && Boolean(readExternalWait(repairCase.checkpoint) || resume.provider);
     const timeout = setTimeout(() => {
       timedOut = true;
       void this.options.onCancelWork?.(id);
@@ -242,6 +247,8 @@ export class RepairCaseService {
         signal: controller.signal,
         resume,
         progress: async (progress) => {
+          // Routine monitoring stays quiet; changed results and errors still get delivered below.
+          if (quietFallback) return;
           const normalized = JSON.stringify(progress) ?? String(progress);
           if (progressMessages.has(normalized)) return;
           progressMessages.add(normalized);
@@ -278,12 +285,31 @@ export class RepairCaseService {
         return;
       }
       if (result?.wake) {
+        let quiet = false;
+        if (result.externalWait) {
+          const planned = planExternalWait(result.externalWait, result.wake, repairCase.checkpoint, resume, this.options.now?.());
+          result.wake = planned.wake;
+          const checkpoint = result.checkpoint ?? repairCase.checkpoint;
+          result.checkpoint = {
+            ...(checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint) ? checkpoint : { summary: checkpoint }),
+            externalWait: planned.state,
+          };
+          quiet = planned.quiet;
+          this.store.saveWaitCheckpoint(id, this.ownerId, result.checkpoint, {
+            refundAttempt: planned.unchanged && resume?.source === "timer",
+            availableAt: planned.state.availableAt,
+          });
+        }
         if (result.checkpoint !== undefined) this.store.transition(id, "verifying", { from: ["working", "verifying"], checkpoint: result.checkpoint, actor: this.ownerId });
         this.store.setWake(id, result.wake);
         runAgain = this.store.get(id)?.status === "ready";
         if (!runAgain) {
-          if (result.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
-          for (const delivery of result.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
+          if (quiet) {
+            this.store.addActivity(id, "wait_unchanged", { externalWait: readExternalWait(result.checkpoint), notificationSuppressed: true }, this.ownerId);
+          } else {
+            if (result.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
+            for (const delivery of result.deliveries ?? []) this.store.enqueueDelivery(id, delivery.kind, delivery.payload, { dedupeKey: delivery.dedupeKey });
+          }
         }
       } else {
         if (result?.activity) this.store.addActivity(id, result.activity.kind, result.activity.details, this.ownerId);
@@ -368,7 +394,7 @@ export class RepairCaseService {
     if (!this.started || this.stopping) return;
     const dueAt = [this.store.nextTimerDueAt(), this.store.nextDeliveryDueAt()].filter((value): value is string => Boolean(value)).sort()[0];
     if (!dueAt) return;
-    const delay = Math.max(0, Math.min(Date.parse(dueAt) - Date.now(), 2_147_483_647));
+    const delay = Math.max(0, Math.min(Date.parse(dueAt) - (this.options.now?.().getTime() ?? Date.now()), 2_147_483_647));
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
       for (const repairCase of this.store.claimDueTimers()) this.enqueue(repairCase.id);
