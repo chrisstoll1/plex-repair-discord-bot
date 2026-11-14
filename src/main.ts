@@ -98,7 +98,7 @@ const repairCaseService = new RepairCaseService(repairCases, {
       return {
         status: "needs_input",
         checkpoint: { summary: result.response, reason: "No lifecycle decision was recorded" },
-        deliveries: [{ kind: "discord_message", payload: { content: result.response }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:final` }],
+        deliveries: [{ kind: "discord_message", payload: { content: result.response }, dedupeKey: "final" }],
       };
     }
     if (control.type === "wait") {
@@ -111,7 +111,7 @@ const repairCaseService = new RepairCaseService(repairCases, {
           status: "blocked",
           checkpoint: { summary: control.checkpoint, plexVerification: plexVerification.state },
           activity: { kind: "blocked", details: { userUpdate: content, reason: "plex_verification_exhausted", missingMedia: plexVerification.state.missingMedia } },
-          deliveries: [{ kind: "discord_message", payload: { content }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:plex-blocked` }],
+          deliveries: [{ kind: "discord_message", payload: { content }, dedupeKey: "plex-blocked" }],
         };
       }
       const wake = control.provider
@@ -122,14 +122,14 @@ const repairCaseService = new RepairCaseService(repairCases, {
         externalWait: control.externalWait,
         checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt, ...(plexVerification ? { plexVerification: plexVerification.state } : {}) },
         activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake } },
-        deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:wait` }],
+        deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: "wait" }],
       };
     }
     return {
       status: control.status,
       checkpoint: { summary: control.checkpoint },
       activity: { kind: control.status, details: { userUpdate: control.userUpdate } },
-      deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: `${repairCase.id}:attempt:${repairCase.attempts}:finish` }],
+      deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: "finish" }],
     };
   },
   onSystemEvent: async (repairCase, event) => agent.generateRepairCaseStatus({
