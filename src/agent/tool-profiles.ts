@@ -76,7 +76,7 @@ const RADARR_WRITE_TOOLS = [
 ] as const;
 
 const PLEX_WRITE_TOOLS = ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match"] as const;
-const SEERR_READ_TOOLS = ["search_seerr_media", "get_seerr_media", "get_seerr_request"] as const;
+const SEERR_READ_TOOLS = ["search_seerr_media", "get_seerr_media", "get_seerr_request", "get_seerr_request_options"] as const;
 
 export const TOOL_PROFILES: Record<ToolProfile, readonly string[]> = {
   sonarr_agent: SONARR_READ_TOOLS,
@@ -86,7 +86,7 @@ export const TOOL_PROFILES: Record<ToolProfile, readonly string[]> = {
   sonarr_repair_agent: [...SONARR_READ_TOOLS, ...SONARR_WRITE_TOOLS],
   radarr_repair_agent: [...RADARR_READ_TOOLS, ...RADARR_WRITE_TOOLS],
   plex_repair_agent: [...PLEX_READ_TOOLS, ...PLEX_WRITE_TOOLS],
-  seerr_request_agent: [...SEERR_READ_TOOLS, "request_seerr_media"],
+  seerr_request_agent: [...SEERR_READ_TOOLS, "request_seerr_media", "update_seerr_request", "retry_seerr_request", "delete_seerr_request", "replace_seerr_request"],
 };
 
 const REPAIR_PROFILES = new Set<ToolProfile>(["sonarr_repair_agent", "radarr_repair_agent", "plex_repair_agent", "seerr_request_agent"]);

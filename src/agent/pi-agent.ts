@@ -21,7 +21,7 @@ import type { ManualImportMode, ManualImportOverride } from "../services/arr-cli
 import type { PlexScannerLogQuery } from "../services/plex-scanner-logs.js";
 import type { PlexMovieSearch, PlexMovieMatchQuery, PlexMovieSplit, PlexMovieFixMatch } from "../services/plex-movies.js";
 import type { AddMovieParams, AddSeriesParams } from "../services/arr-add.js";
-import type { SeerrMediaType, SeerrRequestParams } from "../services/seerr-client.js";
+import type { SeerrMediaType, SeerrRequestParams, SeerrRequestTarget, SeerrRequestUpdate, SeerrRequestReplacement } from "../services/seerr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
@@ -745,6 +745,9 @@ export class PiAgentService {
   private createTools(context: AgentRequestContext, toolNames?: readonly string[]) {
     const mediaClients = createMediaClients(this.store, this.logger, context.userId);
     const clients = () => mediaClients;
+    const seerrMediaType = Type.Union([Type.Literal("movie"), Type.Literal("tv")]);
+    const seerrDestination = Type.Object({ serverId: Type.Integer({ minimum: 0 }), profileId: Type.Integer({ minimum: 1 }), rootFolder: Type.String({ minLength: 1 }) });
+    const seerrTarget = { requestId: Type.Integer({ minimum: 1 }), mediaType: seerrMediaType, tmdbId: Type.Integer({ minimum: 1 }), expectedIs4k: Type.Boolean({ description: "Observed 4K scope of the existing request" }) };
 
     const tools = [
       defineTool({
@@ -796,19 +799,65 @@ export class PiAgentService {
       }),
       defineTool({
         name: "get_seerr_request", label: "Check a Seerr request",
-        description: "Read one saved Seerr request ID as the mapped requester. Distinguishes pending approval, approved, failed, completed and actual media availability. Use media detail status if Seerr denies access to someone else's existing request.",
+        description: "Read one saved Seerr request ID as the mapped requester, including destination server/profile/root, linked Arr service ID/URL, timestamps, approval and availability. Seerr server IDs identify destinations and are not Arr movie/series IDs. Use media detail status if Seerr denies access to someone else's existing request.",
         parameters: Type.Object({ requestId: Type.Integer({ minimum: 1 }) }),
         execute: async (_id, params: { requestId: number }) => toolResponse(await clients().seerr.getRequest(params.requestId)),
       }),
       defineTool({
+        name: "get_seerr_request_options", label: "Inspect Seerr request destinations",
+        description: "Read configured Seerr Radarr (movie) or Sonarr (tv) destinations without secrets. Omit serverId to list servers; pass an observed serverId (can be zero) for profiles and root folders. Inspect before choosing a request destination. Standard/non-4K does not alone mean 1080p; choose the observed profile matching the requested quality. This does not change configuration.",
+        parameters: Type.Object({ mediaType: seerrMediaType, serverId: Type.Optional(Type.Integer({ minimum: 0 })) }),
+        execute: async (_id, params: { mediaType: SeerrMediaType; serverId?: number }) => toolResponse(await clients().seerr.getRequestOptions(params.mediaType, params.serverId)),
+      }),
+      defineTool({
         name: "request_seerr_media", label: "Request content through Seerr",
-        description: "Record a tracked Seerr movie/TV request as the server-resolved Discord requester; uses Seerr's own server/profile defaults, permissions, quotas and approval rules. Requires exact TMDB ID/title/year. For TV pass explicit seasons or allSeasons=true. Default is4k=false; use true only for an explicit 4K request. Avoids duplicate active requests and already available scope. Preserve returned request ID/link in the checkpoint. No user/account/approval/quota/server overrides are accepted. Bot repair role and confirmation rules also apply.",
-        parameters: Type.Object({ mediaType: Type.Union([Type.Literal("movie"), Type.Literal("tv")]), tmdbId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), is4k: Type.Optional(Type.Boolean()), seasons: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { minItems: 1, uniqueItems: true })), allSeasons: Type.Optional(Type.Boolean()) }),
+        description: "Record a tracked Seerr movie/TV request as the server-resolved Discord requester, respecting Seerr permissions, quotas and approval rules. Requires exact TMDB ID/title/year. For TV pass explicit seasons or allSeasons=true. Default is4k=false; use true only for explicit 4K. Optional destination must use a discovered server/profile/root matching that scope; otherwise Seerr defaults apply. Check destinationVerified before claiming a selected profile was applied. Avoids duplicate active requests and available scope. No account, approval or quota overrides. Bot repair role and confirmation rules also apply.",
+        parameters: Type.Object({ mediaType: seerrMediaType, tmdbId: Type.Integer({ minimum: 1 }), title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), is4k: Type.Optional(Type.Boolean()), seasons: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { minItems: 1, uniqueItems: true })), allSeasons: Type.Optional(Type.Boolean()), destination: Type.Optional(seerrDestination) }),
         execute: async (_id, params: SeerrRequestParams) => {
           const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
-            action: `Request Seerr ${params.mediaType} ${params.tmdbId} ${JSON.stringify(params.title)} (${params.year}) for Discord user ${context.userId} is4k=${params.is4k === true} seasons=${params.allSeasons ? "all_regular" : JSON.stringify([...(params.seasons ?? [])].sort((a, b) => a - b))}` });
+            action: `Request Seerr ${params.mediaType} ${params.tmdbId} ${JSON.stringify(params.title)} (${params.year}) for Discord user ${context.userId} is4k=${params.is4k === true} seasons=${params.allSeasons ? "all_regular" : JSON.stringify([...(params.seasons ?? [])].sort((a, b) => a - b))} destination=${JSON.stringify(params.destination ?? "Seerr defaults")}` });
           if (policy) return policy;
           return toolResponse(await clients().seerr.requestMedia(params));
+        },
+      }),
+      defineTool({
+        name: "update_seerr_request", label: "Update a pending Seerr request destination",
+        description: "Update only a pending request's discovered destination server/profile/root, preserving requester, tags, TV seasons and 4K scope. Seerr does not support editing approved requests or converting is4k in place. Inspect its linked Arr item instead, or use an explicitly authorized replacement for a quality-scope change. Does not approve requests or bypass Seerr permissions. Bot repair policy applies.",
+        parameters: Type.Object({ ...seerrTarget, destination: seerrDestination }),
+        execute: async (_id, params: SeerrRequestUpdate) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { action: `Update Seerr request ${params.requestId} ${params.mediaType} ${params.tmdbId} is4k=${params.expectedIs4k} destination=${JSON.stringify(params.destination)}` });
+          if (policy) return policy;
+          return toolResponse(await clients().seerr.updateRequest(params));
+        },
+      }),
+      defineTool({
+        name: "retry_seerr_request", label: "Retry a failed Seerr request",
+        description: "Resend one verified failed Seerr request to its configured Arr destination. Only failed requests are supported by Seerr's retry API; pending approval and approved/processing are not eligible. Never change status to force retry. Uses mapped user's Seerr permissions and bot repair policy. Acceptance does not prove a download.",
+        parameters: Type.Object(seerrTarget),
+        execute: async (_id, params: SeerrRequestTarget) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { action: `Retry Seerr request ${params.requestId} ${params.mediaType} ${params.tmdbId} is4k=${params.expectedIs4k}` });
+          if (policy) return policy;
+          return toolResponse(await clients().seerr.retryRequest(params));
+        },
+      }),
+      defineTool({
+        name: "delete_seerr_request", label: "Remove one Seerr request record",
+        description: "Remove only the exact verified Seerr request record, without requesting Arr removal or file deletion. Requires explicit user authorization for request removal, destructive policy and any configured confirmation. Never delete first to attempt a quality conversion; use replace_seerr_request to verify a replacement before removal. Does not bypass Seerr permissions.",
+        parameters: Type.Object(seerrTarget),
+        execute: async (_id, params: SeerrRequestTarget) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { destructive: true, action: `Delete Seerr request record ${params.requestId} ${params.mediaType} ${params.tmdbId} is4k=${params.expectedIs4k}; preserve Arr media and files` });
+          if (policy) return policy;
+          return toolResponse(await clients().seerr.deleteRequest(params));
+        },
+      }),
+      defineTool({
+        name: "replace_seerr_request", label: "Replace a Seerr request quality scope",
+        description: "For explicitly authorized replacement/removal, convert between 4K and standard request scopes by creating and verifying a new request before removing the old request record. Preserves linked requester and exact TV seasons. Requires exact source identity/scope, title/year, target is4k and discovered destination/profile/root. Requires destructive policy. Retains original if new request is pending approval, denied, duplicate, or destination is unverified. Never use if the user forbids deletion; Seerr cannot change is4k in place. No media/file deletion or approval/quota bypass. Save both returned IDs and inspect partial outcomes before retrying.",
+        parameters: Type.Object({ ...seerrTarget, title: Type.String({ minLength: 1 }), year: Type.Integer({ minimum: 1800, maximum: 2200 }), is4k: Type.Boolean(), destination: seerrDestination }),
+        execute: async (_id, params: SeerrRequestReplacement) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, { destructive: true, action: `Replace Seerr request record ${params.requestId} ${params.mediaType} ${params.tmdbId} ${JSON.stringify(params.title)} (${params.year}) is4k=${params.expectedIs4k} with is4k=${params.is4k} destination=${JSON.stringify(params.destination)} for Discord user ${context.userId}; verify new request before removing original, preserve Arr media and files` });
+          if (policy) return policy;
+          return toolResponse(await clients().seerr.replaceRequest(params));
         },
       }),
       defineTool({

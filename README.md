@@ -13,6 +13,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 - Diagnose missing or incorrect movies, series, seasons, episodes, specials, and anime releases.
 - Compare Plex availability with Sonarr or Radarr state, queues, history, files, and releases.
 - Request new movies and TV seasons through optional Seerr integration, retaining request IDs, approval states, and links in repair history.
+- Inspect Seerr destinations and quality profiles, edit pending request destinations, retry failed requests, and replace explicitly authorized 4K/standard requests after verifying the replacement. Seerr does not support changing an approved request's quality scope in place; request removal/replacement follows destructive-repair policy and never requests media/file deletion.
 - Add movies to Radarr or series to Sonarr when the direct-add toggle is enabled, using existing roots/profiles and requested TV-season scope.
 - Diagnose Plex indexing and matching issues using read-only scanner/server log excerpts filtered by title/path, with context, server-local time windows, pagination, and credential redaction.
 - Inspect compact movie identities and all file versions, split incorrectly merged Plex movies, and fix an isolated movie's match using an exact external-ID lookup while preserving both files.
