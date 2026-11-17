@@ -1,5 +1,8 @@
 export type SecretValue = { configured: boolean; value?: string; clear?: boolean };
 export type PortalAuthSettings = { enabled: boolean; username: string; passwordConfigured: boolean };
+export type PortalSession = { enabled: boolean; authenticated: boolean; username?: string; csrfToken?: string };
+let csrfToken: string | undefined;
+export function setPortalSession(session: PortalSession) { csrfToken = session.csrfToken; }
 
 export type Settings = {
   discord: {
@@ -37,7 +40,12 @@ export type ServiceState = "connected" | "configured" | "missing" | "error" | "u
 export type ServiceStatus = { name: string; state: ServiceState; detail?: string; latencyMs?: number; checkedAt?: string };
 export type StatusResponse = { services: ServiceStatus[]; checkedAt?: string; version?: string; uptimeSeconds?: number; startedAt?: string };
 
+export type PageInfo = { total: number; offset: number; limit: number };
 export type AgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskPage = { tasks: AgentTask[]; counts: Record<AgentTaskStatus, number>; pagination: PageInfo };
+export type RepairFilter = "all" | "working" | "waiting" | "attention" | "completed";
+export type RepairPage = { repairs: RepairCase[]; counts: Record<RepairCaseStatus, number>; pagination: PageInfo };
+export type TimelinePage = { timeline: RepairCaseActivity[]; pagination: PageInfo };
 export type AgentTask = {
   id: string;
   parentTaskId?: string;
@@ -132,12 +140,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    headers: { Accept: "application/json", "X-Repairman-Request": "1", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
+    headers: { Accept: "application/json", "X-Repairman-Request": "1", ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}), ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
   });
   if (!response.ok) {
     let details: unknown;
     try { details = await response.json(); } catch { details = await response.text(); }
     const message = getErrorMessage(details) ?? `Request failed (${response.status})`;
+    if (response.status === 401 && details && typeof details === "object" && "error" in details && details.error && typeof details.error === "object" && "code" in details.error && details.error.code === "authentication_required") {
+      csrfToken = undefined;
+      window.dispatchEvent(new Event("portal-session-expired"));
+    }
     throw new ApiError(message, response.status, details);
   }
   if (response.status === 204) return undefined as T;
@@ -145,19 +157,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getPortalSession: () => request<PortalSession>("/api/auth/session"),
+  login: async (credentials: { username: string; password: string }) => { const session = await request<PortalSession>("/api/auth/login", { method: "POST", body: JSON.stringify(credentials) }); setPortalSession(session); return session; },
+  logout: async () => { await request("/api/auth/logout", { method: "POST" }); csrfToken = undefined; },
   getPortalAuth: () => request<PortalAuthSettings>("/api/portal-auth"),
-  updatePortalAuth: (settings: { enabled: boolean; username: string; password?: string }) => request<PortalAuthSettings>("/api/portal-auth", { method: "PUT", body: JSON.stringify(settings) }),
+  updatePortalAuth: async (settings: { enabled: boolean; username: string; password?: string; currentPassword?: string }) => {
+    const result = await request<PortalAuthSettings & { session: PortalSession }>("/api/portal-auth", { method: "PUT", body: JSON.stringify(settings) });
+    setPortalSession(result.session);
+    window.dispatchEvent(new CustomEvent("portal-session-updated", { detail: result.session }));
+    const { session: _, ...value } = result;
+    return value;
+  },
   getSettings: () => request<{ settings: Settings }>("/api/settings").then((response) => response.settings),
   updateSettings: (settings: Settings) => request<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(toSettingsUpdate(settings)) }).then((response) => response.settings),
   getStatus: () => request<StatusResponse>("/api/status"),
   getTasks: () => request<{ tasks: AgentTask[] }>("/api/tasks").then((response) => response.tasks),
+  getTaskPage: (offset: number, limit: number) => request<TaskPage>(`/api/tasks?offset=${offset}&limit=${limit}`),
   cancelTask: (id: string) => request<{ task: AgentTask }>(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.task),
   clearTaskHistory: () => request<{ deleted: number }>("/api/tasks/history", { method: "DELETE" }),
   getRepairs: () => request<{ repairs: RepairCase[] }>("/api/repairs").then((response) => response.repairs),
+  getRepairPage: (offset: number, limit: number, group: RepairFilter) => request<RepairPage>(`/api/repairs?offset=${offset}&limit=${limit}&group=${group}`),
   clearRepairs: () => request<{ deleted: number }>("/api/repairs", { method: "DELETE" }),
   cancelRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/cancel`, { method: "POST" }).then((response) => response.repair),
   resumeRepair: (id: string) => request<{ repair: RepairCase }>(`/api/repairs/${encodeURIComponent(id)}/resume`, { method: "POST" }).then((response) => response.repair),
   getRepairActivity: (id: string) => request<{ timeline: RepairCaseActivity[] }>(`/api/repairs/${encodeURIComponent(id)}/timeline`).then((response) => response.timeline),
+  getRepairTimelinePage: (id: string, offset: number, limit: number) => request<TimelinePage>(`/api/repairs/${encodeURIComponent(id)}/timeline?offset=${offset}&limit=${limit}`),
   getWebhookConfig: () => request<WebhookConfig>("/api/webhooks/config"),
   updateWebhookConfig: (config: Pick<WebhookConfig, "publicBaseUrl" | "sonarrEnabled" | "radarrEnabled">) => request<WebhookConfig>("/api/webhooks/config", { method: "PUT", body: JSON.stringify(config) }),
   rotateWebhookSecret: () => request<WebhookConfig>("/api/webhooks/rotate-secret", { method: "POST" }),

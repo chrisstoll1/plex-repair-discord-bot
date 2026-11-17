@@ -29,7 +29,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
 ## Safety
 
-The web portal opens directly by default. To enable HTTP Basic authentication, open **Bot settings > Portal access**, enable the toggle, enter a username and password, and save. When it is disabled, anyone who can reach the portal can manage credentials, policies and retained data. Keep the portal on a trusted network or behind an authenticated HTTPS reverse proxy. Leave application Basic auth off when the reverse proxy already handles authentication. See [SECURITY.md](SECURITY.md).
+The web portal opens directly by default. To require a form login, open **Settings > Security**, turn on **Require sign-in**, and save an administrator username and password. Sessions use a private cookie and can coexist with reverse-proxy authentication. When sign-in is off, anyone who can reach the portal can manage credentials, policies and retained data. Use a trusted network or an authenticated HTTPS reverse proxy. See [SECURITY.md](SECURITY.md).
 
 Repair execution is disabled by default:
 
@@ -99,15 +99,15 @@ For Docker-based TrueNAS releases (24.10 and newer), the Custom App YAML accepts
 
 ## First-Time Setup
 
-1. Open `http://<host>:3000`. The portal opens immediately. Optionally enable Basic authentication under `Bot settings > Portal access`; no setup token or container-shell access is required.
-2. Open `Connections` and enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
-   Optionally add Seerr's URL and API key. Requests use Seerr's configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
-3. Enter the Discord application ID if you want the global `/health` slash command.
-4. Connect OpenAI Codex using the device-code panel.
-5. Optionally configure the public Repairman URL under `Automatic progress events`, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, rename, and manual-interaction-required events.
-6. Open `Bot Settings` and configure Discord allowlists, repair roles, model behavior, timeouts, and repair policy.
-7. Open `Overview` to test Plex, Sonarr, and Radarr connectivity and review Discord and AI-auth status.
-8. Use `Ongoing Repairs` and `Agent Tasks` to inspect or manage retained operational data.
+1. Open `http://<host>:3000`. The portal opens immediately. Optionally enable **Require sign-in** under **Settings > Security**; no setup token or container-shell access is required.
+2. Open **Settings > Discord** for the bot token and application ID. Open **Settings > Connections** for Plex, Sonarr, Radarr and optional Seerr credentials.
+   Seerr uses its configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
+3. Open **Settings > AI** to connect OpenAI Codex and choose the model, thinking level and timeouts.
+4. Optionally configure **Automatic progress events** in **Settings > Connections**, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, rename, and manual-interaction-required events.
+5. Configure guild/channel allowlists and repair roles in **Settings > Discord**. Configure confirmations, destructive actions and direct additions in **Settings > Repair policy**.
+6. Open **Overview** to review service connectivity and AI-auth status. Use **Repairs** and **Agent tasks** to inspect retained operational data.
+
+The sidebar separates daily work (Overview, Repairs and Agent tasks) from configuration. **Settings** contains Connections, Discord, AI, Repair policy and Security. Existing `/connections`, `/bot-settings` and `/account` links redirect into the new structure. Settings forms share Save changes, Reset and unsaved-change protection.
 
 The portal remains available when Discord is unconfigured or fails to connect, allowing connection settings to be corrected.
 
@@ -144,6 +144,7 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | `HTTP_HOST` | `0.0.0.0` | Web server bind address |
 | `HTTP_PORT` | `3000` | Web server port |
 | `LOG_LEVEL` | `info` | Application log level |
+| `PORTAL_SECURE_COOKIE` | `false` | Set `true` for an HTTPS-only portal; secure cookies cannot be used over direct HTTP |
 
 ### Persistent Files
 
@@ -166,20 +167,18 @@ When upgrading from a 0.1 image:
 1. Stop the app and back up its configuration dataset.
 2. Grant the configured non-root runtime UID/GID read/write access to the existing configuration tree. On an ordinary Linux bind mount using the default image user, the owner is `1000:1000`. TrueNAS catalog defaults use `568:568`; use Dataset Permissions/ACLs to grant access. The permissions helper initializes empty datasets; it deliberately does not recursively change ownership of existing data. Do not change ownership of your media datasets.
 3. Start the new image with the same `/config` volume. Existing settings, encrypted credentials, AI authentication and repair history are retained.
-4. Open the portal and review `Bot settings > Portal access`. Authentication defaults off unless you previously configured an administrator in 0.2.0; see the migration notes below.
+4. Open the portal and review **Settings > Security**. Sign-in defaults off unless credentials were already configured; see the migration notes below.
 5. Verify `/health`, portal access, service connectivity and retained repairs before enabling further work.
 
 For rollback, stop the app, restore the complete pre-upgrade backup and use its previous exact image tag or digest. Avoid running an older image against a database already changed by a newer version.
 
 ### Portal Authentication
 
-Enable or disable **Basic authentication** from **Bot settings > Portal access**. Set a username and a password of at least eight characters. Leave the password blank to keep an existing one. Changes apply immediately; the browser prompts for credentials on subsequent requests when enabled. Browsers manage Basic-auth credentials, so there is no application sign-out button. Use HTTPS for remote access.
+Enable or disable **Require sign-in** from **Settings > Security**. Set a username and a password of at least eight characters, then confirm the new password. Leave the password blank to keep the saved one. Security changes require your current password when sign-in is already enabled. Saving keeps your current browser signed in and revokes other sessions. Use **Sign out** in the header on a shared computer. Sessions expire after 12 hours or an application restart.
 
-If a reverse proxy already uses Basic authentication, leave the application toggle off. Two independent Basic-auth layers on the same URL cannot use different credentials because both consume the Authorization header.
+The portal uses its own sign-in form and HttpOnly, SameSite cookies. It does not use HTTP Basic challenges or the Authorization header, so an existing reverse-proxy Basic login can remain enabled with different credentials. Use HTTPS for remote access, set `PORTAL_SECURE_COOKIE=true` for HTTPS-only cookies, and disable proxy caching for the portal and `/api` routes.
 
-On upgrade from **0.2.0**, unfinished administrator setup no longer blocks the portal and its unused setup token is removed. A completed administrator account migrates to enabled Basic auth with username **admin** and the same password. It can then be disabled or changed from the UI. The old session login and PORTAL_SECURE_COOKIE setting are no longer used. Other settings and repair history are retained.
-
-If an existing reverse proxy uses different Basic credentials, open the application's direct LAN address once with username `admin` and the old application password, then disable application Basic auth in Bot settings. The proxy can continue protecting the external URL.
+Upgrading from **0.2.1** preserves the application-auth toggle, username and password, migrating them from Basic auth to form sign-in. Completed **0.2.0** administrator accounts migrate with username **admin** and the same password. Fresh installs and unfinished setups remain open by default; obsolete setup tokens are removed. Other settings, encryption keys, AI authentication and repair history are retained. Existing browser sessions must sign in again after upgrading.
 
 To recover lost credentials, stop the app, run the reset helper with the same configuration volume and runtime UID/GID, then restart it:
 
@@ -189,7 +188,7 @@ docker compose run --rm --no-deps --entrypoint node plex-repairman scripts/reset
 docker compose up -d plex-repairman
 ```
 
-This disables application Basic auth and clears only its credentials. Re-enable it from the UI if desired. In TrueNAS, use a temporary container with the same image, runtime UID/GID and configuration dataset to run the helper while the app is stopped. Do not delete the database or secrets.key.
+This disables application sign-in and clears only its credentials. Re-enable it in **Settings > Security** if desired. In TrueNAS, use a temporary container with the same image, runtime UID/GID and configuration dataset to run the helper while the app is stopped. Do not delete the database or secrets.key.
 
 ## Example Requests
 
@@ -215,19 +214,19 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.1-build.65.1`. A matching `v0.2.1` Git tag publishes stable image version `0.2.1` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
+Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.2-build.65.1`. A matching `v0.2.2` Git tag publishes stable image version `0.2.2` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
 
 | Tag | Use |
 | --- | --- |
 | `latest` | Current mutable build from `master` |
-| `0.2.1` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
-| `0.2.1-build.<run>.<attempt>` | Automatic build from `master` |
+| `0.2.2` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
+| `0.2.2-build.<run>.<attempt>` | Automatic build from `master` |
 | `build-<run-number>.<run-attempt>` | Exact workflow attempt, including reruns |
 | `sha-<commit-sha>` | Build for a specific source commit |
 
 The web menu links the displayed version to this repository. Use an exact build-attempt tag or image digest when reproducible deployment or rollback is important.
 
-When Basic authentication is enabled, portal pages, assets and administration APIs require its credentials. `/health` remains public and Arr webhooks use their own secret URL. State-changing API requests require `X-Repairman-Request: 1`, including when authentication is disabled. No cross-origin access is granted.
+When sign-in is enabled, administration APIs require a portal session. The public page shell displays only the sign-in form until authenticated. `/health` remains public and Arr webhooks use their own secret URL. State-changing API requests require `X-Repairman-Request: 1` and authenticated changes also require the session CSRF token. No cross-origin access is granted.
 
 ## Development
 

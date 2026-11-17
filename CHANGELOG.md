@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2
+
+- Paginate repairs, agent tasks and repair timelines, with complete history counts and repair status filters across all records. Keep toggles at a fixed size and show disconnected AI accounts in red.
+- Replace browser Basic prompts with optional form sign-in, expiring sessions, explicit sign-out and CSRF protection. Preserve configured 0.2.0/0.2.1 credentials and coexist with reverse-proxy authentication.
+- Reorganize administration into Overview, Repairs, Agent tasks and Settings, with Connections, Discord, AI, Repair policy and Security sections. Move portal access out of bot settings and keep old URLs working.
+- Add password confirmation, current-password verification and consistent save/reset/unsaved-change behavior for security settings. Keep the saving browser signed in when enabling or changing login.
+
 ## 0.2.1
 
 - Replace mandatory administrator setup and session login with optional HTTP Basic authentication, configured by a toggle and username/password fields in Bot settings. Authentication defaults off for fresh installs.

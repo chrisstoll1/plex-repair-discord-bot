@@ -152,7 +152,7 @@ export class RepairCaseStore {
     return row ? caseFromRow(row) : undefined;
   }
 
-  list(filters: { statuses?: RepairCaseStatus[]; guildId?: string; threadId?: string; userId?: string; limit?: number } = {}): RepairCase[] {
+  list(filters: { statuses?: RepairCaseStatus[]; guildId?: string; threadId?: string; userId?: string; limit?: number; offset?: number } = {}): RepairCase[] {
     const where: string[] = [];
     const values: unknown[] = [];
     if (filters.statuses) {
@@ -165,7 +165,14 @@ export class RepairCaseStore {
     }
     const clause = where.length ? ` WHERE ${where.join(" AND ")}` : "";
     const limit = Math.max(1, Math.min(filters.limit ?? 100, 1000));
-    return (this.db.prepare(`SELECT * FROM repair_cases${clause} ORDER BY updated_at DESC, id LIMIT ?`).all(...values, limit) as CaseRow[]).map(caseFromRow);
+    return (this.db.prepare(`SELECT * FROM repair_cases${clause} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`).all(...values, limit, Math.max(0, filters.offset ?? 0)) as CaseRow[]).map(caseFromRow);
+  }
+
+  statusCounts(): Record<RepairCaseStatus, number> {
+    const counts = Object.fromEntries(REPAIR_CASE_STATUSES.map((status) => [status, 0])) as Record<RepairCaseStatus, number>;
+    const rows = this.db.prepare("SELECT status, COUNT(*) AS count FROM repair_cases GROUP BY status").all() as Array<{ status: RepairCaseStatus; count: number }>;
+    for (const row of rows) counts[row.status] = row.count;
+    return counts;
   }
 
   listRunnable(limit = 1000): RepairCase[] {

@@ -1,37 +1,32 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, LoaderCircle, RotateCcw, Save } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
+import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
-import { useBlocker } from "react-router-dom";
 import { api, type AiModel, type Settings } from "../lib/api";
 import { settingsSchema } from "../lib/schemas";
 import { ErrorState, LoadingState } from "./states";
 import { useToast } from "./toast";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, ConfirmDialog, Input, Label, Switch } from "./ui";
+import { Badge, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from "./ui";
+import { SettingsSaveBar } from "./settings-save-bar";
 
-export function SettingsEditor({ mode }: { mode: "connections" | "bot" }) {
+export type SettingsSection = "connections" | "discord" | "ai" | "repair";
+
+export function SettingsEditor({ mode }: { mode: SettingsSection }) {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
-  const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "bot" });
+  const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "ai" });
 
   if (settingsQuery.isPending) return <LoadingState label="Loading configuration" />;
   if (settingsQuery.isError) return <ErrorState error={settingsQuery.error} retry={() => settingsQuery.refetch()} />;
 
-  return <SettingsForm mode={mode} settings={settingsQuery.data} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />;
+  return <SettingsForm key={mode} mode={mode} settings={settingsQuery.data} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />;
 }
 
-function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { mode: "connections" | "bot"; settings: Settings; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
+function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { mode: SettingsSection; settings: Settings; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settings });
   const { formState: { isDirty, errors, isSubmitting }, handleSubmit, register, control, reset, setValue, watch } = form;
-  const blocker = useBlocker(isDirty);
-
-  useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (isDirty) event.preventDefault(); };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [isDirty]);
 
   const mutation = useMutation({
     mutationFn: api.updateSettings,
@@ -46,12 +41,11 @@ function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { 
 
   const submit = handleSubmit((values) => mutation.mutateAsync(values));
   return <form onSubmit={submit} noValidate className="space-y-5">
-    {mode === "connections" ? <ConnectionsFields form={{ register, control, setValue, watch, errors }} /> : <BotFields form={{ register, control, setValue, watch, errors }} models={models} modelsPending={modelsPending} modelsError={modelsError} />}
-    <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-xl border border-line bg-[#11171c]/95 p-3 shadow-2xl backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-      <p className="px-1 text-xs text-zinc-500">{isDirty ? <span className="text-amber-300">Unsaved configuration changes</span> : "All changes saved"}</p>
-      <div className="flex gap-2"><Button type="button" variant="ghost" disabled={!isDirty || isSubmitting} onClick={() => reset(settings)}><RotateCcw className="h-4 w-4" />Reset</Button><Button type="submit" disabled={!isDirty || isSubmitting || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}Save changes</Button></div>
-    </div>
-    <ConfirmDialog open={blocker.state === "blocked"} onOpenChange={(open) => { if (!open && blocker.state === "blocked") blocker.reset(); }} title="Discard unsaved changes?" description="You have configuration changes that have not been saved. Leaving this view will discard them." confirmLabel="Discard and leave" destructive onConfirm={() => blocker.state === "blocked" && blocker.proceed()} />
+    {mode === "connections" && <ConnectionsFields form={{ register, control, setValue, watch, errors }} />}
+    {mode === "discord" && <DiscordFields form={{ register, control, setValue, watch, errors }} />}
+    {mode === "ai" && <div className="grid gap-5 xl:grid-cols-2"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
+    {mode === "repair" && <RepairFields form={{ register, control, setValue, watch, errors }} />}
+    <SettingsSaveBar dirty={isDirty} saving={isSubmitting || mutation.isPending} onReset={() => reset(settings)} />
   </form>;
 }
 
@@ -60,7 +54,6 @@ type FormParts = Pick<ReturnType<typeof useForm<Settings>>, "register" | "contro
 function ConnectionsFields({ form }: { form: FormParts }) {
   const { register, control, watch, errors } = form;
   return <div className="grid gap-5 xl:grid-cols-2">
-    <Section title="Discord gateway" description="Bot identity and Discord access credential."><TextField label="Application ID" path="discord.applicationId" register={register} error={errors.discord?.applicationId} placeholder="Discord application ID" /><SecretField label="Bot token" base="discord.token" register={register} control={control} watch={watch} /></Section>
     <Section title="Plex media server" description="Primary library and playback server."><TextField label="Server URL" path="plex.url" register={register} error={errors.plex?.url} placeholder="http://plex.local:32400" /><SecretField label="Plex token" base="plex.token" register={register} control={control} watch={watch} /></Section>
     <Section title="Sonarr" description="Television index and repair target."><TextField label="Server URL" path="sonarr.url" register={register} error={errors.sonarr?.url} placeholder="http://sonarr.local:8989" /><SecretField label="API key" base="sonarr.apiKey" register={register} control={control} watch={watch} /></Section>
     <Section title="Radarr" description="Movie index and repair target."><TextField label="Server URL" path="radarr.url" register={register} error={errors.radarr?.url} placeholder="http://radarr.local:7878" /><SecretField label="API key" base="radarr.apiKey" register={register} control={control} watch={watch} /></Section>
@@ -75,14 +68,24 @@ function ConnectionsFields({ form }: { form: FormParts }) {
   </div>;
 }
 
-function BotFields({ form, models, modelsPending, modelsError }: { form: FormParts; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
-  const { register, control, errors } = form;
+function DiscordFields({ form }: { form: FormParts }) {
+  const { register, control, watch, errors } = form;
   return <div className="grid gap-5 xl:grid-cols-2">
+    <Section title="Bot identity" description="Connect the bot to your Discord application."><TextField label="Application ID" path="discord.applicationId" register={register} error={errors.discord?.applicationId} placeholder="Discord application ID" /><SecretField label="Bot token" base="discord.token" register={register} control={control} watch={watch} /></Section>
     <Section title="Discord access" description="Limit where commands are accepted and who can run repairs."><TextField label="Allowed guild IDs" path="discord.allowedGuildIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Allowed channel IDs" path="discord.allowedChannelIds" register={register} placeholder="Comma-separated; blank allows all" /><TextField label="Repair role IDs" path="discord.repairRoleIds" register={register} placeholder="Comma-separated" /><ToggleField label="Allow direct messages" description="Accept repair requests outside servers." path="discord.allowDirectMessages" control={control} /><ToggleField label="Message reactions" description="Use reactions to communicate task state." path="discord.reactionsEnabled" control={control} /></Section>
-    <AiModelFields form={form} models={models} pending={modelsPending} error={modelsError} />
-    <Section title="New content requests" description="Choose whether the bot can add new library entries directly."><ToggleField label="Allow direct Sonarr/Radarr additions" description="Allow new movies or series using existing root folders and quality profiles. Off by default. A configured preferred Seerr connection handles requests instead." path="repair.allowDirectAdd" control={control} /></Section>
-    <Section title="Safety and timeouts" description="Set request limits and control which repairs may execute."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={register} error={errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={register} error={errors.timeouts?.releaseLookupSeconds} type="number" /><ToggleField label="Require confirmation" description="Blocks repair execution until action-specific confirmation is implemented." path="repair.requireConfirmation" control={control} /><ToggleField label="Allow destructive repairs" description="Permit queue removal, file deletion, and movie or series removal." path="repair.allowDestructive" control={control} /></Section>
   </div>;
+}
+
+function RepairFields({ form }: { form: FormParts }) {
+  const { control } = form;
+  return <div className="grid gap-5 xl:grid-cols-2">
+    <Section title="New content requests" description="Choose whether the bot can add new library entries directly."><ToggleField label="Allow direct Sonarr/Radarr additions" description="Allow new movies or series using existing root folders and quality profiles. Off by default. A configured preferred Seerr connection handles requests instead." path="repair.allowDirectAdd" control={control} /></Section>
+    <Section title="Repair safeguards" description="Control which actions the bot can take on your media."><ToggleField label="Require confirmation" description="Ask the requester to approve each exact repair action before it runs." path="repair.requireConfirmation" control={control} /><ToggleField label="Allow destructive repairs" description="Permit queue removal, file deletion, and movie or series removal." path="repair.allowDestructive" control={control} /></Section>
+  </div>;
+}
+
+function TimeoutFields({ form }: { form: FormParts }) {
+  return <Section title="Request timeouts" description="How long to wait for standard operations and release searches."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={form.register} error={form.errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={form.register} error={form.errors.timeouts?.releaseLookupSeconds} type="number" /></Section>;
 }
 
 function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
