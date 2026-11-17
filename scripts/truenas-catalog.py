@@ -41,7 +41,6 @@ for values_path in sorted((app_path / 'templates/test_values').glob('*.yaml')):
     assert service['cap_drop'] == ['ALL']
     assert 'no-new-privileges=true' in service['security_opt']
     assert service['environment']['CONFIG_DIR'] == '/config'
-    assert service['environment']['PORTAL_SECURE_COOKIE'] in ('true', 'false')
     assert not any('/var/run/docker.sock' in str(mount) for mount in service.get('volumes', []))
     (results / f'{values_path.stem}.json').write_text(json.dumps(rendered, indent=2) + '\n')
 

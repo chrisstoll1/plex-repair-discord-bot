@@ -29,7 +29,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
 ## Safety
 
-The web portal requires a single administrator password. First-time setup requires a one-time token from the configuration volume. Sessions expire after 12 hours or an application restart. The administrator can change credentials and policies and inspect or delete retained conversation and agent-task data. Keep the portal on a trusted network or use an HTTPS reverse proxy; set `PORTAL_SECURE_COOKIE=true` for HTTPS-only cookies. See [SECURITY.md](SECURITY.md) for the security model.
+The web portal opens directly by default. To enable HTTP Basic authentication, open **Bot settings > Portal access**, enable the toggle, enter a username and password, and save. When it is disabled, anyone who can reach the portal can manage credentials, policies and retained data. Keep the portal on a trusted network or behind an authenticated HTTPS reverse proxy. Leave application Basic auth off when the reverse proxy already handles authentication. See [SECURITY.md](SECURITY.md).
 
 Repair execution is disabled by default:
 
@@ -99,7 +99,7 @@ For Docker-based TrueNAS releases (24.10 and newer), the Custom App YAML accepts
 
 ## First-Time Setup
 
-1. Open `http://<host>:3000`. Read the one-time setup token from `/config/portal-setup-token` in the container shell or configuration dataset, and use it to create an administrator password of at least 12 characters. For Compose, run `docker compose exec plex-repairman cat /config/portal-setup-token` locally. The token is removed after setup; it is never written to application logs. In TrueNAS, open the app's Shell and run `cat /config/portal-setup-token`.
+1. Open `http://<host>:3000`. The portal opens immediately. Optionally enable Basic authentication under `Bot settings > Portal access`; no setup token or container-shell access is required.
 2. Open `Connections` and enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
    Optionally add Seerr's URL and API key. Requests use Seerr's configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
 3. Enter the Discord application ID if you want the global `/health` slash command.
@@ -144,7 +144,6 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | `HTTP_HOST` | `0.0.0.0` | Web server bind address |
 | `HTTP_PORT` | `3000` | Web server port |
 | `LOG_LEVEL` | `info` | Application log level |
-| `PORTAL_SECURE_COOKIE` | `false` | Set `true` when accessing the portal through HTTPS; direct HTTP cannot use secure cookies |
 
 ### Persistent Files
 
@@ -153,7 +152,6 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, processed messages, and agent-task history |
 | `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
 | `/config/pi/auth.json` | Pi/OpenAI authentication data |
-| `/config/portal-setup-token` | One-time administrator setup token, present only until setup is completed |
 
 Ordinary settings and retained message/task data are not encrypted. The database and `secrets.key` belong together; losing the key makes encrypted service credentials unrecoverable.
 
@@ -168,14 +166,22 @@ When upgrading from a 0.1 image:
 1. Stop the app and back up its configuration dataset.
 2. Grant the configured non-root runtime UID/GID read/write access to the existing configuration tree. On an ordinary Linux bind mount using the default image user, the owner is `1000:1000`. TrueNAS catalog defaults use `568:568`; use Dataset Permissions/ACLs to grant access. The permissions helper initializes empty datasets; it deliberately does not recursively change ownership of existing data. Do not change ownership of your media datasets.
 3. Start the new image with the same `/config` volume. Existing settings, encrypted credentials, AI authentication and repair history are retained.
-4. Complete administrator setup using the generated token. Existing reverse-proxy Basic authentication may remain enabled; the application login is an additional step.
+4. Open the portal and review `Bot settings > Portal access`. Authentication defaults off unless you previously configured an administrator in 0.2.0; see the migration notes below.
 5. Verify `/health`, portal access, service connectivity and retained repairs before enabling further work.
 
 For rollback, stop the app, restore the complete pre-upgrade backup and use its previous exact image tag or digest. Avoid running an older image against a database already changed by a newer version.
 
-### Administrator Password Recovery
+### Portal Authentication
 
-Change a known password from `Account` in the portal. To recover a lost password, stop the app, reset only the administrator credential using the same image and configuration mount, then start it again. For Compose:
+Enable or disable **Basic authentication** from **Bot settings > Portal access**. Set a username and a password of at least eight characters. Leave the password blank to keep an existing one. Changes apply immediately; the browser prompts for credentials on subsequent requests when enabled. Browsers manage Basic-auth credentials, so there is no application sign-out button. Use HTTPS for remote access.
+
+If a reverse proxy already uses Basic authentication, leave the application toggle off. Two independent Basic-auth layers on the same URL cannot use different credentials because both consume the Authorization header.
+
+On upgrade from **0.2.0**, unfinished administrator setup no longer blocks the portal and its unused setup token is removed. A completed administrator account migrates to enabled Basic auth with username **admin** and the same password. It can then be disabled or changed from the UI. The old session login and PORTAL_SECURE_COOKIE setting are no longer used. Other settings and repair history are retained.
+
+If an existing reverse proxy uses different Basic credentials, open the application's direct LAN address once with username `admin` and the old application password, then disable application Basic auth in Bot settings. The proxy can continue protecting the external URL.
+
+To recover lost credentials, stop the app, run the reset helper with the same configuration volume and runtime UID/GID, then restart it:
 
 ```bash
 docker compose stop plex-repairman
@@ -183,7 +189,7 @@ docker compose run --rm --no-deps --entrypoint node plex-repairman scripts/reset
 docker compose up -d plex-repairman
 ```
 
-Read the newly available `/config/portal-setup-token` locally and create a new password. This preserves media credentials, policies, AI authentication and repair history. In TrueNAS, stop the app and use a temporary container of the same image with its configuration dataset and runtime UID/GID mounted to run that command, then remove the temporary container and restart the app. Do not expose the dataset or share the setup token. Do not delete the database or `secrets.key` to reset a portal password.
+This disables application Basic auth and clears only its credentials. Re-enable it from the UI if desired. In TrueNAS, use a temporary container with the same image, runtime UID/GID and configuration dataset to run the helper while the app is stopped. Do not delete the database or secrets.key.
 
 ## Example Requests
 
@@ -209,19 +215,19 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.0-build.65.1`. A matching `v0.2.0` Git tag publishes stable image version `0.2.0` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
+Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.1-build.65.1`. A matching `v0.2.1` Git tag publishes stable image version `0.2.1` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
 
 | Tag | Use |
 | --- | --- |
 | `latest` | Current mutable build from `master` |
-| `0.2.0` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
-| `0.2.0-build.<run>.<attempt>` | Automatic build from `master` |
+| `0.2.1` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
+| `0.2.1-build.<run>.<attempt>` | Automatic build from `master` |
 | `build-<run-number>.<run-attempt>` | Exact workflow attempt, including reruns |
 | `sha-<commit-sha>` | Build for a specific source commit |
 
 The web menu links the displayed version to this repository. Use an exact build-attempt tag or image digest when reproducible deployment or rollback is important.
 
-Application sessions authenticate the administration API; reverse-proxy Basic credentials alone no longer authorize API requests. `/health` and secret-authenticated webhook endpoints do not require a portal session. HTTPS proxy users should enable secure cookies. Backups and application logs should be kept private.
+When Basic authentication is enabled, portal pages, assets and administration APIs require its credentials. `/health` remains public and Arr webhooks use their own secret URL. State-changing API requests require `X-Repairman-Request: 1`, including when authentication is disabled. No cross-origin access is granted.
 
 ## Development
 
@@ -243,7 +249,7 @@ node scripts/smoke-container.mjs plex-repairman:dev
 node scripts/check-truenas-catalog.mjs --image plex-repairman:dev
 ```
 
-These checks require Docker and Git. Catalog validation uses the pinned upstream repository and validation image in `packaging/truenas/toolchain.json`. It tests both managed-volume and host-path templates, non-default ports, non-root users, health and first-time setup. The image smoke checks also cover a legacy-data fixture, restart persistence, backup/restore, secret-authenticated webhooks and offline password recovery.
+These checks require Docker and Git. Catalog validation uses the pinned upstream repository and validation image in `packaging/truenas/toolchain.json`. It tests both managed-volume and host-path templates, non-default ports, non-root users, health and default portal access. The image smoke checks also cover a legacy-data fixture, restart persistence, backup/restore, secret-authenticated webhooks and offline authentication recovery.
 
 Run the API and Vite development servers in separate terminals:
 

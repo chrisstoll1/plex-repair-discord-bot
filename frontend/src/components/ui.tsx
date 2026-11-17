@@ -38,8 +38,8 @@ export const Input = ({ className, ...props }: InputHTMLAttributes<HTMLInputElem
 export const Textarea = ({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea className={cn("min-h-24 w-full resize-y rounded-md border border-line bg-ink/70 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-signal/60 focus:ring-2 focus:ring-signal/10", className)} {...props} />;
 export const Label = ({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) => <LabelPrimitive.Root className={cn("text-sm font-medium text-zinc-200", className)} {...props} />;
 
-export function Switch({ checked, onCheckedChange, "aria-label": ariaLabel }: { checked: boolean; onCheckedChange: (value: boolean) => void; "aria-label": string }) {
-  return <SwitchPrimitive.Root checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="relative h-6 w-11 rounded-full bg-zinc-700 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[22px] data-[state=checked]:bg-[#17130b]" /></SwitchPrimitive.Root>;
+export function Switch({ id, checked, onCheckedChange, "aria-label": ariaLabel }: { id?: string; checked: boolean; onCheckedChange: (value: boolean) => void; "aria-label": string }) {
+  return <SwitchPrimitive.Root id={id} checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="relative h-6 w-11 rounded-full bg-zinc-700 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[22px] data-[state=checked]:bg-[#17130b]" /></SwitchPrimitive.Root>;
 }
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "good" | "warn" | "bad" | "neutral" | "info" }) {

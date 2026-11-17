@@ -6,7 +6,6 @@ resources:
 labels: []
 repairman:
   additional_envs: []
-  secure_cookie: true
 network:
   host_network: false
   networks: []

@@ -10,7 +10,6 @@
 {% do app.environment.add_env("HOME", "/config") %}
 {% do app.environment.add_env("HTTP_HOST", "0.0.0.0") %}
 {% do app.environment.add_env("HTTP_PORT", values.network.web_port.port_number) %}
-{% do app.environment.add_env("PORTAL_SECURE_COOKIE", values.repairman.secure_cookie) %}
 {% do app.environment.add_user_envs(values.repairman.additional_envs) %}
 {% do app.healthcheck.set_test("curl", {"port": values.network.web_port.port_number, "path": "/health"}) %}
 {% do app.add_port(values.network.web_port) %}
@@ -22,5 +21,5 @@
   {% do app.depends.add_dependency(values.consts.perms_container_name, "service_completed_successfully") %}
 {% endif %}
 {% do tpl.portals.add(values.network.web_port) %}
-{% do tpl.notes.add_info("Create the administrator account using the one-time token in /config/portal-setup-token. Read it from the app shell or the configuration dataset. Configure Discord, media services and OpenAI Codex authentication in the portal. See the upstream README for setup, HTTPS, recovery and backup instructions.") %}
+{% do tpl.notes.add_info("Open the portal to configure Discord, media services and OpenAI Codex authentication. Basic authentication is optional and can be enabled under Bot settings > Portal access. Use a trusted network or an HTTPS reverse proxy with access controls. See the upstream README for setup and backup instructions.") %}
 {{ tpl.render() | tojson }}
