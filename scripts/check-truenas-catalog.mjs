@@ -19,6 +19,13 @@ const prefix = `repairman-catalog-${crypto.randomBytes(5).toString("hex")}`;
 const volume = `${prefix}-workspace`;
 const runner = `${prefix}-tools`;
 const appPath = "/workspace/ix-dev/community/plex-repairman";
+const fixturesPath = path.join(root, "packaging/truenas/fixtures");
+const fixtures = fs.existsSync(fixturesPath) ? fs.readdirSync(fixturesPath).filter((name) => name.endsWith(".yaml")) : [];
+const testCases = fs.readdirSync(path.join(source, "templates/test_values")).filter((name) => name.endsWith(".yaml"));
+for (const name of fixtures) {
+  assert.ok(!testCases.includes(name), `Duplicate catalog fixture ${name}.`);
+  testCases.push(name);
+}
 const exec = (command, values) => execFileSync(command, values, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 180_000 }).trim();
 const docker = (...values) => exec("docker", values);
 let createdVolume = false;
@@ -35,6 +42,8 @@ try {
   docker("run", "-d", "--name", runner, "--env", "FAKE_ENV=1", "--env", `CATALOG_VOLUME=${volume}`, "--volume", `${volume}:/workspace`, "--volume", "/var/run/docker.sock:/var/run/docker.sock:ro", "--workdir", "/workspace", "--entrypoint", "sleep", toolchain.validationImage, "infinity"); createdRunner = true;
   for (const name of [".github", ".gitignore", "ix-dev", "library"]) docker("cp", path.join(upstream, name), `${runner}:/workspace/${name}`);
   docker("cp", source, `${runner}:/workspace/ix-dev/community/plex-repairman`);
+  // Supplemental storage scenarios stay in our validation suite, outside the upstream app definition.
+  for (const name of fixtures) docker("cp", path.join(fixturesPath, name), `${runner}:${appPath}/templates/test_values/${name}`);
   docker("cp", path.join(root, "scripts/truenas-catalog.py"), `${runner}:/workspace/check-catalog.py`);
   console.log(docker("exec", runner, "python3", "/workspace/.github/scripts/port_validation.py"));
   docker("exec", runner, "apps_catalog_hash_generate", "--path", "/workspace", "--train", "community", "--app", "plex-repairman");
@@ -47,7 +56,8 @@ try {
   }
 
   if (image) {
-    for (const name of ["basic-values", "host-path-values"]) {
+    for (const testCase of testCases) {
+      const name = path.basename(testCase, ".yaml");
       const rendered = path.join(temp, `${name}.json`);
       docker("cp", `${runner}:/workspace/check-results/${name}.json`, rendered);
       const compose = JSON.parse(fs.readFileSync(rendered, "utf8"));

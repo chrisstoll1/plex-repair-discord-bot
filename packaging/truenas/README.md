@@ -1,12 +1,14 @@
 # TrueNAS catalog package
 
-This directory contains the source for a new **community** app in [truenas/apps](https://github.com/truenas/apps). The catalog entry targets the stable **0.2.2** release. It is not a listing in the public catalog yet, and that image must be published before submission.
+This directory contains the source for a new **community** app in [truenas/apps](https://github.com/truenas/apps). The catalog entry targets the public, digest-verified **0.2.2** image as initial catalog version **1.0.0**. Earlier catalog version numbers were provisional; no catalog version has been published yet.
+
+Submission: [app-request issue #6559](https://github.com/truenas/apps/issues/6559) and [app-addition PR #6560](https://github.com/truenas/apps/pull/6560). The public Discover Apps listing is pending upstream review, merge and catalog publication. The [review bundle](https://github.com/chrisstoll1/plex-repair-discord-bot/releases/download/v0.2.2/plex-repairman-truenas-catalog-1.0.0.zip) and [checksum](https://github.com/chrisstoll1/plex-repair-discord-bot/releases/download/v0.2.2/plex-repairman-truenas-catalog-1.0.0.sha256) include the current port and refreshed synthetic-data screenshots.
 
 The package follows the upstream [contribution guide](https://github.com/truenas/apps/blob/master/CONTRIBUTIONS.md). It includes metadata, generated listing data, install/edit questions, a Compose template and two storage test cases. `toolchain.json` pins the upstream source and validation image used to verify it. Generated rendering libraries and rendered Compose files are deliberately excluded from Git.
 
 ## Installation behavior
 
-- Default portal port: **30598**, selected with the upstream port validator. Recheck availability against the current catalog immediately before opening the upstream PR.
+- Default portal port: **30600**, selected with the upstream port validator. Recheck availability against the current catalog immediately before opening the upstream PR. The earlier provisional ports 30598 and 30599 are now used by other apps.
 - Default user/group: **568:568**, configurable. The image itself defaults to **1000:1000** for ordinary Docker installations.
 - Persistent mount: **/config**, with an ixVolume by default or an existing host dataset path. The permissions helper initializes empty datasets only; existing datasets need suitable ownership/ACLs before upgrading.
 - The main container drops capabilities, prevents privilege escalation and uses a read-only root filesystem with a temporary /tmp filesystem.
@@ -26,6 +28,8 @@ node scripts/check-truenas-catalog.mjs --image plex-repairman:dev
 ```
 
 The catalog script runs the actual upstream metadata generator, port validator and development catalog/schema validator. It renders both managed-volume and host-path cases, then installs each rendered configuration with the locally built image. Tests use random Compose project names and synthetic data. They clean up their containers and configuration data. On Docker Desktop, a disposable Linux volume avoids NTFS limitations in the upstream tools' atomic file writes.
+
+The submitted app includes the conventional `templates/test_values/basic-values.yaml` only. Supplemental host-path coverage lives in `packaging/truenas/fixtures/host-path-values.yaml`; our checker copies it into its disposable validation workspace. It is excluded from the catalog submission and release exporter.
 
 After intentionally changing metadata or the pinned toolchain, regenerate listing metadata:
 
