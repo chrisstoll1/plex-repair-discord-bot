@@ -29,6 +29,8 @@ node scripts/check-truenas-catalog.mjs --image plex-repairman:dev
 
 The catalog script runs the actual upstream metadata generator, port validator and development catalog/schema validator. It renders both managed-volume and host-path cases, then installs each rendered configuration with the locally built image. Tests use random Compose project names and synthetic data. They clean up their containers and configuration data. On Docker Desktop, a disposable Linux volume avoids NTFS limitations in the upstream tools' atomic file writes.
 
+The submitted app includes the conventional `templates/test_values/basic-values.yaml` only. Supplemental host-path coverage lives in `packaging/truenas/fixtures/host-path-values.yaml`; our checker copies it into its disposable validation workspace. It is excluded from the catalog submission and release exporter.
+
 After intentionally changing metadata or the pinned toolchain, regenerate listing metadata:
 
 ```bash
