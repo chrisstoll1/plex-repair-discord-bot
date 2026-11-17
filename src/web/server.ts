@@ -20,7 +20,7 @@ import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { DiscordBotService } from "../discord/bot.js";
 import type { PiAuthService, PiAuthSnapshot } from "../agent/pi-auth.js";
 import type { RepairCaseService } from "../agent/repair-case-service.js";
-import type { RepairCase, RepairCaseActivity, RepairCaseStore } from "../storage/repair-cases.js";
+import { REPAIR_CASE_STATUSES, type RepairCase, type RepairCaseActivity, type RepairCaseStore, type RepairCaseStatus } from "../storage/repair-cases.js";
 import { registerPortalAuth, type PortalAuthService } from "./portal-auth.js";
 
 const nonEmptyTrimmedString = z.string().trim().min(1);
@@ -67,7 +67,18 @@ const settingsUpdateSchema = z
   .strict();
 
 const taskParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
-const taskQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict();
+const taskQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict();
+const repairGroups = {
+  working: ["working", "ready", "verifying"], waiting: ["waiting"],
+  attention: ["needs_input", "blocked", "exhausted"], completed: ["resolved", "cancelled"],
+} satisfies Record<string, RepairCaseStatus[]>;
+const repairQuerySchema = taskQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(1000).default(500),
+  group: z.enum(["all", "working", "waiting", "attention", "completed"]).default("all"),
+});
 const repairParamsSchema = z.object({ id: nonEmptyTrimmedString }).strict();
 const webhookParamsSchema = z.object({ provider: z.enum(["sonarr", "radarr"]), secret: nonEmptyTrimmedString }).strict();
 const webhookConfigSchema = z.object({
@@ -166,7 +177,11 @@ export async function createWebServer(
   app.get("/api/tasks", async (request, reply) => {
     const query = parseOrReply(taskQuerySchema, request.query, reply);
     if (!query) return;
-    return { tasks: toolAgentQueue.list({ limit: query.limit }) };
+    if (query.offset === undefined) return { tasks: toolAgentQueue.list({ limit: query.limit }) };
+    const counts = toolAgentQueue.statusCounts();
+    const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    const offset = pageOffset(query.offset, total, query.limit);
+    return { tasks: toolAgentQueue.list({ limit: query.limit, offset }), counts, pagination: { total, offset, limit: query.limit } };
   });
 
   app.delete("/api/tasks/history", async () => ({ deleted: toolAgentQueue.clearHistory() }));
@@ -183,7 +198,16 @@ export async function createWebServer(
     return { task };
   });
 
-  app.get("/api/repairs", async () => ({ repairs: repairCases?.list({ limit: 500 }).map((repairCase) => publicRepairCase(repairCase, repairCases)) ?? [] }));
+  app.get("/api/repairs", async (request, reply) => {
+    const query = parseOrReply(repairQuerySchema, request.query, reply);
+    if (!query) return;
+    const statuses = query.group === "all" ? undefined : repairGroups[query.group];
+    if (query.offset === undefined) return { repairs: repairCases?.list({ limit: query.limit, statuses }).map((repair) => publicRepairCase(repair, repairCases)) ?? [] };
+    const counts = repairCases?.statusCounts() ?? Object.fromEntries(REPAIR_CASE_STATUSES.map((status) => [status, 0])) as Record<RepairCaseStatus, number>;
+    const total = (statuses ?? REPAIR_CASE_STATUSES).reduce((sum, status) => sum + counts[status], 0);
+    const offset = pageOffset(query.offset, total, query.limit);
+    return { repairs: repairCases?.list({ limit: query.limit, offset, statuses }).map((repair) => publicRepairCase(repair, repairCases)) ?? [], counts, pagination: { total, offset, limit: query.limit } };
+  });
 
   app.delete("/api/repairs", async () => {
     const ids = repairCases?.listAll().map((repairCase) => repairCase.id) ?? [];
@@ -202,6 +226,8 @@ export async function createWebServer(
   app.get("/api/repairs/:id/timeline", async (request, reply) => {
     const params = parseOrReply(repairParamsSchema, request.params, reply);
     if (!params) return;
+    const query = parseOrReply(taskQuerySchema, request.query, reply);
+    if (!query) return;
     if (!repairCases?.get(params.id)) return sendError(reply, 404, "repair_not_found", "Repair was not found.");
     const activity = repairCases.listActivity(params.id).map((entry) => ({ ...publicRepairActivity(entry), id: `activity:${entry.id}`, source: activitySource(entry.kind) }));
     const botActivityCounts = activity.filter((entry) => entry.source === "bot" && entry.message).reduce((counts, entry) => counts.set(entry.message!, (counts.get(entry.message!) ?? 0) + 1), new Map<string, number>());
@@ -220,7 +246,10 @@ export async function createWebServer(
       actor: message.metadata && typeof message.metadata === "object" && "userId" in message.metadata ? String(message.metadata.userId) : undefined,
       createdAt: message.createdAt,
     }));
-    return { timeline: [...activity, ...messages].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)) };
+    const timeline = [...activity, ...messages].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+    if (query.offset === undefined) return { timeline };
+    const offset = pageOffset(query.offset, timeline.length, query.limit);
+    return { timeline: timeline.reverse().slice(offset, offset + query.limit), pagination: { total: timeline.length, offset, limit: query.limit } };
   });
 
   app.post("/api/repairs/:id/cancel", async (request, reply) => {
@@ -291,6 +320,10 @@ export async function createWebServer(
   });
 
   return app;
+}
+
+function pageOffset(requested: number, total: number, limit: number) {
+  return Math.min(requested, Math.max(0, Math.ceil(total / limit) - 1) * limit);
 }
 
 function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {

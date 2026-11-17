@@ -37,7 +37,7 @@ describe("SettingsEditor", () => {
     vi.spyOn(api, "getAiModels").mockResolvedValue([{ provider: "openai-codex", id: "gpt-5.1-codex", name: "GPT-5.1 Codex", reasoning: true, contextWindow: 200000 }]);
     const save = vi.spyOn(api, "updateSettings").mockImplementation(async (value) => value);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const router = createMemoryRouter([{ path: "/bot-settings", element: <SettingsEditor mode="bot" /> }], { initialEntries: ["/bot-settings"] });
+    const router = createMemoryRouter([{ path: "/settings/repair-policy", element: <SettingsEditor mode="repair" /> }], { initialEntries: ["/settings/repair-policy"] });
     render(<QueryClientProvider client={queryClient}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
     const toggle = await screen.findByRole("switch", { name: "Allow direct Sonarr/Radarr additions" });
     expect(toggle).not.toBeChecked();
@@ -66,7 +66,7 @@ describe("SettingsEditor", () => {
       { provider: "openai-codex", id: "gpt-5.1-codex", name: "GPT-5.1 Codex", reasoning: true, contextWindow: 200_000 },
     ]);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const router = createMemoryRouter([{ path: "/bot-settings", element: <SettingsEditor mode="bot" /> }], { initialEntries: ["/bot-settings"] });
+    const router = createMemoryRouter([{ path: "/settings/ai", element: <SettingsEditor mode="ai" /> }], { initialEntries: ["/settings/ai"] });
 
     render(<QueryClientProvider client={queryClient}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
 
@@ -80,7 +80,7 @@ describe("SettingsEditor", () => {
     vi.spyOn(api, "getSettings").mockResolvedValue(settings);
     vi.spyOn(api, "getAiModels").mockImplementation(() => new Promise((resolve) => { resolveModels = resolve; }));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const router = createMemoryRouter([{ path: "/bot-settings", element: <SettingsEditor mode="bot" /> }], { initialEntries: ["/bot-settings"] });
+    const router = createMemoryRouter([{ path: "/settings/ai", element: <SettingsEditor mode="ai" /> }], { initialEntries: ["/settings/ai"] });
 
     render(<QueryClientProvider client={queryClient}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
 

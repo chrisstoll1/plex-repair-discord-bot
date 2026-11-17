@@ -21,5 +21,5 @@
   {% do app.depends.add_dependency(values.consts.perms_container_name, "service_completed_successfully") %}
 {% endif %}
 {% do tpl.portals.add(values.network.web_port) %}
-{% do tpl.notes.add_info("Open the portal to configure Discord, media services and OpenAI Codex authentication. Basic authentication is optional and can be enabled under Bot settings > Portal access. Use a trusted network or an HTTPS reverse proxy with access controls. See the upstream README for setup and backup instructions.") %}
+{% do tpl.notes.add_info("Open Settings to configure Discord, media services and OpenAI Codex authentication. Optional form sign-in is under Settings > Security and works alongside reverse-proxy authentication. Use a trusted network or HTTPS for remote access. See the upstream README for setup and backup instructions.") %}
 {{ tpl.render() | tojson }}

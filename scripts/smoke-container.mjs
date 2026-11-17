@@ -6,6 +6,8 @@ const image = process.argv[2] || "plex-repairman:dev";
 const prefix = `repairman-smoke-${crypto.randomBytes(5).toString("hex")}`;
 const containers = new Set();
 const volumes = new Set();
+const browsers = new Map();
+const proxyBasic = `Basic ${Buffer.from("proxy-user:independent-proxy-password").toString("base64")}`;
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 120_000 }).trim();
 const runSource = (args, source) => execFileSync("docker", ["run", "--rm", "-i", ...args, "--entrypoint", "node", image, "--input-type=module"], { input: source, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,21 +26,26 @@ async function start(name, volume, uid) {
 }
 
 async function request(base, route, { method = "GET", body, auth, expected = 200 } = {}) {
+  const browser = browsers.get(base);
   const response = await fetch(`${base}${route}`, { method,
-    headers: { "X-Repairman-Request": "1", ...(body ? { "Content-Type": "application/json" } : {}), ...(auth ? { Authorization: auth } : {}) },
+    headers: { "X-Repairman-Request": "1", ...(body ? { "Content-Type": "application/json" } : {}), ...(auth ? { Authorization: proxyBasic, ...(browser?.cookie ? { Cookie: browser.cookie } : {}), ...(browser?.csrfToken ? { "X-CSRF-Token": browser.csrfToken } : {}) } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   assert.equal(response.status, expected, `${method} ${route.replace(/\/webhooks\/[^/]+\/.*/, "/webhooks/[redacted]")}`);
-  return response.json();
+  const data = await response.json();
+  const cookie = response.headers.get("set-cookie")?.split(";")[0];
+  const session = data.session ?? (route === "/api/auth/login" ? data : undefined);
+  if (cookie || session) browsers.set(base, { cookie: cookie ?? browser?.cookie, csrfToken: session?.csrfToken ?? browser?.csrfToken });
+  return data;
 }
 function stop(name) { docker("rm", "-f", name); containers.delete(name); }
 
 try {
-  for (const [uid, mode] of [[1000, "fresh"], [568, "unfinished"], [1000, "configured"]]) {
+  for (const [uid, mode] of [[1000, "fresh"], [568, "unfinished"], [1000, "configured"], [1000, "basic"]]) {
     const volume = `${prefix}-${mode}`;
     volumes.add(volume); docker("volume", "create", volume);
     const password = crypto.randomBytes(24).toString("base64url");
-    const auth = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
+    const auth = true;
     runSource(["--user", "0:0", "--mount", `type=volume,source=${volume},target=/config`], `
       import fs from 'node:fs';
       import crypto from 'node:crypto';
@@ -53,10 +60,11 @@ try {
         settings.setString('sonarr.apiKey', 'synthetic-upgrade-key', { secret: true });
         new RepairCaseStore(db).create({ guildId: 'legacy-guild', threadId: 'legacy-thread', source: 'fixture', userId: 'test', authorizationActor: 'test', title: 'Legacy repair', objective: 'Preserve historical data' });
         db.prepare("UPDATE repair_cases SET status = 'cancelled'").run();
-        if (${mode === "configured"}) {
+        if (${mode === "configured" || mode === "basic"}) {
           const salt = crypto.randomBytes(32).toString('base64url');
           const hash = crypto.scryptSync(${JSON.stringify(password)}, salt, 64, { N: 131072, r: 8, p: 1, maxmem: 192 * 1024 * 1024 }).toString('hex');
-          settings.setJson('portal.adminCredential', { salt, hash }, { secret: true });
+          if (${mode === "basic"}) settings.setJson('portal.basicAuth', { salt, hash, enabled: true, username: 'admin', revision: 'legacy' }, { secret: true });
+          else settings.setJson('portal.adminCredential', { salt, hash }, { secret: true });
         }
         fs.writeFileSync('/config/portal-setup-token', 'obsolete-synthetic-token', { mode: 0o600 });
         db.close();
@@ -66,11 +74,12 @@ try {
     `);
     let name = `${prefix}-app-${mode}`;
     let base = await start(name, volume, uid);
-    if (mode === "configured") await request(base, "/api/settings", { expected: 401 });
+    if (mode === "configured" || mode === "basic") await request(base, "/api/settings", { expected: 401 });
     else {
       assert.deepEqual(await request(base, "/api/portal-auth"), { enabled: false, username: "admin", passwordConfigured: false });
       await request(base, "/api/portal-auth", { method: "PUT", body: { enabled: true, username: "admin", password } });
     }
+    await request(base, "/api/auth/login", { method: "POST", body: { username: "admin", password } });
     assert.equal(docker("exec", name, "node", "-p", "require('fs').existsSync('/config/portal-setup-token')"), "false");
     const { settings } = await request(base, "/api/settings", { auth });
     assert.equal(settings.repair.requireConfirmation, true);
@@ -88,12 +97,12 @@ try {
     const webhook = await request(base, "/api/webhooks/config", { method: "PUT", auth, body: { publicBaseUrl: base, sonarrEnabled: true, radarrEnabled: false } });
     await request(base, new URL(webhook.sonarrUrl).pathname, { method: "POST", body: { eventType: "Test" }, expected: 202 });
     await request(base, "/webhooks/sonarr/incorrect", { method: "POST", body: { eventType: "Test" }, expected: 401 });
-    await request(base, "/api/portal-auth", { method: "PUT", auth, body: { enabled: false, username: "admin" } });
+    await request(base, "/api/portal-auth", { method: "PUT", auth, body: { enabled: false, username: "admin", currentPassword: password } });
     await request(base, "/api/settings");
     await request(base, "/api/portal-auth", { method: "PUT", body: { enabled: true, username: "admin" } });
     const logs = docker("logs", name);
     assert.equal(logs.includes(password), false);
-    assert.equal(logs.includes(auth), false);
+    assert.equal(logs.includes(proxyBasic), false);
     assert.equal(logs.includes(new URL(webhook.sonarrUrl).pathname), false);
     stop(name);
     const restored = `${prefix}-restored-${mode}`;
@@ -102,6 +111,7 @@ try {
     name = `${prefix}-restored-app-${mode}`;
     base = await start(name, restored, uid);
     await request(base, "/api/settings", { expected: 401 });
+    await request(base, "/api/auth/login", { method: "POST", body: { username: "admin", password } });
     assert.equal((await request(base, "/api/settings", { auth })).settings.discord.allowedGuildIds, "smoke-persisted-guild");
     if (mode !== "fresh") assert.equal((await request(base, "/api/settings", { auth })).settings.sonarr.apiKey.configured, true);
     stop(name);
@@ -110,7 +120,7 @@ try {
     assert.deepEqual(await request(base, "/api/portal-auth"), { enabled: false, username: "admin", passwordConfigured: false });
     assert.equal((await request(base, "/api/settings")).settings.discord.allowedGuildIds, "smoke-persisted-guild");
     stop(name);
-    console.log(`Passed: UID ${uid}, ${mode}, optional Basic auth, migration, webhooks, backup/restore and offline recovery.`);
+    console.log(`Passed: UID ${uid}, ${mode}, form login with proxy credentials, migration, webhooks, backup/restore and offline recovery.`);
   }
 } finally {
   for (const name of containers) { try { docker("rm", "-f", name); } catch { /* best effort */ } }

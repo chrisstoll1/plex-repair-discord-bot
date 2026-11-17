@@ -12,6 +12,8 @@ import { openDatabase } from "../src/storage/db.js";
 import { SecretBox } from "../src/storage/secrets.js";
 import { SettingsStore } from "../src/storage/settings.js";
 import { RepairCaseStore } from "../src/storage/repair-cases.js";
+import { ToolAgentTaskStore } from "../src/storage/tool-agent-tasks.js";
+import { ToolAgentQueueService } from "../src/agent/tool-agent-queue.js";
 import { createWebServer } from "../src/web/server.js";
 
 test("web API redacts secrets, validates atomically, and serves the SPA", async (t) => {
@@ -38,11 +40,8 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
 
   let restartCount = 0;
   const discord = { restart: async () => { restartCount += 1; }, stopRepairCaseActivity: async () => undefined };
-  const queue = {
-    list: () => [],
-    get: () => undefined,
-    cancel: () => undefined,
-  };
+  const taskStore = new ToolAgentTaskStore(db);
+  const queue = new ToolAgentQueueService(taskStore, async () => { throw new Error("Web tests must not execute tasks"); });
   const piSnapshot: PiAuthSnapshot = {
     authPath: path.join(config.piAgentDir, "auth.json"),
     configured: false,
@@ -156,6 +155,70 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);
   assert.deepEqual((await inject({ method: "GET", url: "/api/repairs" })).json(), { repairs: [] });
+  await t.test("pagination reaches older history, keeps global counts, and recovers after deletion", async () => {
+    for (let index = 0; index < 73; index += 1) {
+      const id = `task-${String(index).padStart(3, "0")}`;
+      taskStore.create({ id, channelId: "channel", userId: "user", title: id, toolProfile: "read", prompt: "Synthetic task" });
+      if (index > 0) { taskStore.markRunning(id); taskStore.markSucceeded(id, "done"); }
+    }
+    db.prepare("UPDATE tool_agent_tasks SET created_at = '2026-01-01' WHERE id != 'task-000'").run();
+    db.prepare("UPDATE tool_agent_tasks SET created_at = '2025-01-01' WHERE id = 'task-000'").run();
+    const seenTasks = new Set<string>();
+    for (const offset of [0, 25, 50]) {
+      const response = await inject({ method: "GET", url: `/api/tasks?limit=25&offset=${offset}` });
+      assert.equal(response.statusCode, 200);
+      const page = response.json();
+      assert.deepEqual(page.pagination, { total: 73, offset, limit: 25 });
+      assert.equal(page.counts.queued, 1, "active counts include tasks outside the current page");
+      for (const task of page.tasks) { assert(!seenTasks.has(task.id)); seenTasks.add(task.id); }
+    }
+    assert.equal(seenTasks.size, 73);
+    assert(seenTasks.has("task-000"));
+    assert.deepEqual((await inject({ method: "GET", url: "/api/tasks?limit=25&offset=999" })).json().pagination, { total: 73, offset: 50, limit: 25 });
+    assert.equal((await inject({ method: "DELETE", url: "/api/tasks/history" })).json().deleted, 72);
+    const afterClear = (await inject({ method: "GET", url: "/api/tasks?limit=25&offset=50" })).json();
+    assert.deepEqual(afterClear.pagination, { total: 1, offset: 0, limit: 25 });
+    assert.equal(afterClear.tasks[0].id, "task-000");
+
+    const statuses = ["ready", "waiting", "blocked", "resolved"] as const;
+    for (let index = 0; index < 506; index += 1) {
+      const id = `paged-${String(index).padStart(3, "0")}`;
+      repairs.create({ id, guildId: "guild", threadId: id, source: "message", userId: "user", authorizationActor: "user", title: id, objective: "Synthetic repair", status: statuses[index % statuses.length] });
+    }
+    db.prepare("UPDATE repair_cases SET updated_at = '2026-01-01'").run();
+    const seenRepairs = new Set<string>();
+    for (let offset = 0; offset < 506; offset += 100) {
+      const page = (await inject({ method: "GET", url: `/api/repairs?limit=100&offset=${offset}` })).json();
+      assert.equal(page.pagination.total, 506);
+      assert.equal(page.counts.ready, 127);
+      for (const repair of page.repairs) { assert(!seenRepairs.has(repair.id)); seenRepairs.add(repair.id); }
+    }
+    assert.equal(seenRepairs.size, 506, "repairs beyond the former 500-row cap are reachable");
+    const completed = (await inject({ method: "GET", url: "/api/repairs?group=completed&limit=10&offset=10" })).json();
+    assert.equal(completed.pagination.total, 126);
+    assert.equal(completed.counts.ready, 127, "filter counts stay global");
+    assert.equal(completed.repairs.length, 10);
+    assert(completed.repairs.every((repair: { status: string }) => repair.status === "resolved"));
+
+    for (let index = 0; index < 50; index += 1) repairs.addMessage("paged-000", { role: "user", content: `Timeline ${index}`, createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)) });
+    repairs.addActivity("paged-000", "progress", "Deduplicated bot update");
+    repairs.addMessage("paged-000", { role: "assistant", content: "Deduplicated bot update" });
+    const seenTimeline = new Set<string>();
+    for (const offset of [0, 20, 40]) {
+      const page = (await inject({ method: "GET", url: `/api/repairs/paged-000/timeline?limit=20&offset=${offset}` })).json();
+      assert.equal(page.pagination.total, 52, "duplicate bot updates are merged before pagination");
+      for (const entry of page.timeline) { assert(!seenTimeline.has(entry.id)); seenTimeline.add(entry.id); }
+      assert.deepEqual(page.timeline.map((entry: { createdAt: string }) => entry.createdAt), page.timeline.map((entry: { createdAt: string }) => entry.createdAt).sort().reverse());
+    }
+    assert.equal(seenTimeline.size, 52);
+    for (const url of ["/api/tasks?offset=-1", "/api/tasks?offset=1.5", "/api/tasks?limit=201&offset=0", "/api/repairs?group=invalid&offset=0", "/api/repairs/paged-000/timeline?offset=-1"]) {
+      assert.equal((await inject({ method: "GET", url })).statusCode, 400, url);
+    }
+    await inject({ method: "DELETE", url: "/api/repairs" });
+    const empty = (await inject({ method: "GET", url: "/api/repairs?limit=10&offset=500" })).json();
+    assert.deepEqual(empty.pagination, { total: 0, offset: 0, limit: 10 });
+    assert.deepEqual(empty.repairs, []);
+  });
   assert.equal((await inject({ method: "GET", url: "/api/not-real" })).statusCode, 404);
   assert.match((await inject({ method: "GET", url: "/connections" })).body, /Repairman/);
 });

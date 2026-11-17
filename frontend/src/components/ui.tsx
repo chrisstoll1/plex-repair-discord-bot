@@ -39,7 +39,7 @@ export const Textarea = ({ className, ...props }: TextareaHTMLAttributes<HTMLTex
 export const Label = ({ className, ...props }: React.ComponentProps<typeof LabelPrimitive.Root>) => <LabelPrimitive.Root className={cn("text-sm font-medium text-zinc-200", className)} {...props} />;
 
 export function Switch({ id, checked, onCheckedChange, "aria-label": ariaLabel }: { id?: string; checked: boolean; onCheckedChange: (value: boolean) => void; "aria-label": string }) {
-  return <SwitchPrimitive.Root id={id} checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="relative h-6 w-11 rounded-full bg-zinc-700 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-[22px] data-[state=checked]:bg-[#17130b]" /></SwitchPrimitive.Root>;
+  return <SwitchPrimitive.Root id={id} checked={checked} onCheckedChange={onCheckedChange} aria-label={ariaLabel} className="inline-flex h-6 w-11 shrink-0 items-center rounded-full bg-zinc-700 p-0.5 transition data-[state=checked]:bg-signal focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal"><SwitchPrimitive.Thumb className="block h-5 w-5 translate-x-0 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-5" /></SwitchPrimitive.Root>;
 }
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "good" | "warn" | "bad" | "neutral" | "info" }) {

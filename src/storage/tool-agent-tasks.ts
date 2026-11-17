@@ -141,7 +141,7 @@ export class ToolAgentTaskStore {
     return row ? fromRow(row) : undefined;
   }
 
-  list(params: { conversationKey?: string; userId?: string; parentTaskId?: string; limit?: number } = {}): ToolAgentTask[] {
+  list(params: { conversationKey?: string; userId?: string; parentTaskId?: string; limit?: number; offset?: number } = {}): ToolAgentTask[] {
     const limit = Math.max(1, Math.min(params.limit ?? 50, 200));
     const where: string[] = [];
     const values: unknown[] = [];
@@ -158,8 +158,15 @@ export class ToolAgentTaskStore {
       values.push(params.parentTaskId);
     }
     const clause = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
-    const rows = this.db.prepare(`SELECT * FROM tool_agent_tasks${clause} ORDER BY created_at DESC LIMIT ?`).all(...values, limit) as ToolAgentTaskRow[];
+    const rows = this.db.prepare(`SELECT * FROM tool_agent_tasks${clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(...values, limit, Math.max(0, params.offset ?? 0)) as ToolAgentTaskRow[];
     return rows.map(fromRow);
+  }
+
+  statusCounts(): Record<ToolAgentTaskStatus, number> {
+    const counts = { queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0 };
+    const rows = this.db.prepare("SELECT status, COUNT(*) AS count FROM tool_agent_tasks GROUP BY status").all() as Array<{ status: ToolAgentTaskStatus; count: number }>;
+    for (const row of rows) counts[row.status] = row.count;
+    return counts;
   }
 
   countByStatus(statuses: ToolAgentTaskStatus[], userId?: string): number {

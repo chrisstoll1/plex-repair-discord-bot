@@ -92,7 +92,7 @@ export class ToolAgentQueueService {
     return scope ? this.store.getScoped(id, scope) : this.store.get(id);
   }
 
-  list(params: { conversationKey?: string; userId?: string; parentTaskId?: string; limit?: number } = {}): ToolAgentTask[] {
+  list(params: { conversationKey?: string; userId?: string; parentTaskId?: string; limit?: number; offset?: number } = {}): ToolAgentTask[] {
     if (params.parentTaskId && params.userId && !this.store.getScoped(params.parentTaskId, { conversationKey: params.conversationKey, userId: params.userId })) {
       throw new Error(`Parent tool-agent task ${params.parentTaskId} was not found in this conversation`);
     }
@@ -101,6 +101,10 @@ export class ToolAgentQueueService {
 
   clearHistory(): number {
     return this.store.clearHistory();
+  }
+
+  statusCounts() {
+    return this.store.statusCounts();
   }
 
   async cancel(id: string, scope?: ToolAgentTaskScope): Promise<ToolAgentTask | undefined> {
