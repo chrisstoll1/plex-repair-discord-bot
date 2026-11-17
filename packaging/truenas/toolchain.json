@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/truenas/apps.git",
+  "commit": "9419a76ef25593f8f9de1dbf854aed9855cb8a2a",
+  "library": "2.3.20",
+  "validationImage": "ghcr.io/truenas/apps_validation:slim@sha256:ba4827ae6b636a870a52f709e2f7af718eaf81c4d236cb33768ebb3444ee8083"
+}

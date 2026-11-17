@@ -1,4 +1,8 @@
 export type SecretValue = { configured: boolean; value?: string; clear?: boolean };
+export type PortalSession = { authenticated: boolean; setupRequired: boolean; csrfToken?: string };
+let csrfToken: string | undefined;
+
+function portalSession(session: PortalSession): PortalSession { csrfToken = session.csrfToken; return session; }
 
 export type Settings = {
   discord: {
@@ -130,11 +134,16 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
+    credentials: "same-origin",
+    headers: { Accept: "application/json", "X-Repairman-Request": "1", ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}), ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
   });
   if (!response.ok) {
     let details: unknown;
     try { details = await response.json(); } catch { details = await response.text(); }
+    if (response.status === 401 && details && typeof details === "object" && "error" in details && details.error && typeof details.error === "object" && "code" in details.error && details.error.code === "authentication_required") {
+      csrfToken = undefined;
+      window.dispatchEvent(new Event("portal-signed-out"));
+    }
     const message = getErrorMessage(details) ?? `Request failed (${response.status})`;
     throw new ApiError(message, response.status, details);
   }
@@ -143,6 +152,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getPortalSession: () => request<PortalSession>("/api/auth/session").then(portalSession),
+  setupPortal: (token: string, password: string) => request<PortalSession>("/api/auth/setup", { method: "POST", body: JSON.stringify({ token, password }) }).then(portalSession),
+  loginPortal: (password: string) => request<PortalSession>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }).then(portalSession),
+  logoutPortal: async () => { await request("/api/auth/logout", { method: "POST" }); csrfToken = undefined; window.dispatchEvent(new Event("portal-signed-out")); },
+  changePortalPassword: (currentPassword: string, newPassword: string) => request<PortalSession>("/api/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }).then(portalSession),
   getSettings: () => request<{ settings: Settings }>("/api/settings").then((response) => response.settings),
   updateSettings: (settings: Settings) => request<{ settings: Settings }>("/api/settings", { method: "PUT", body: JSON.stringify(toSettingsUpdate(settings)) }).then((response) => response.settings),
   getStatus: () => request<StatusResponse>("/api/status"),

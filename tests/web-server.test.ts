@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import pino from "pino";
+import type { InjectOptions } from "fastify";
+import { PortalAuthService } from "../src/web/portal-auth.js";
 import type { PiAuthSnapshot } from "../src/agent/pi-auth.js";
 import type { AppConfig } from "../src/config.js";
 import { openDatabase } from "../src/storage/db.js";
@@ -61,11 +63,13 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     refreshScheduling: () => undefined,
   };
 
+  const portalAuth = new PortalAuthService(settings, root);
   const app = await createWebServer(
     settings,
     queue as never,
     discord as never,
     piAuth as never,
+    portalAuth,
     pino({ level: "silent" }),
     webRoot,
     repairs,
@@ -77,7 +81,10 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const read = await app.inject({ method: "GET", url: "/api/settings" });
+  const setup = await app.inject({ method: "POST", url: "/api/auth/setup", headers: { "x-repairman-request": "1" }, payload: { token: fs.readFileSync(portalAuth.setupTokenPath, "utf8").trim(), password: "test-admin-password" } });
+  assert.equal(setup.statusCode, 200);
+  const inject = (options: InjectOptions) => app.inject({ ...options, headers: { cookie: String(setup.headers["set-cookie"]).split(";")[0], "x-repairman-request": "1", "x-csrf-token": setup.json().csrfToken, ...options.headers } });
+  const read = await inject({ method: "GET", url: "/api/settings" });
   assert.equal(read.statusCode, 200);
   assert.deepEqual(read.json().settings.discord.token, { configured: true });
   assert.equal(read.json().settings.ai.serviceTier, "default");
@@ -86,7 +93,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(read.json().settings.seerr.preferForRequests, true);
   assert.equal(read.json().settings.repair.allowDirectAdd, false);
 
-  const invalid = await app.inject({
+  const invalid = await inject({
     method: "PUT",
     url: "/api/settings",
     payload: settingsPayload({ sonarrUrl: "not-a-url" }),
@@ -95,7 +102,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(settings.getString("discord.applicationId"), "before");
   assert.equal(restartCount, 0);
 
-  const updated = await app.inject({
+  const updated = await inject({
     method: "PUT",
     url: "/api/settings",
     payload: settingsPayload({ discordToken: { action: "clear" }, serviceTier: "priority" }),
@@ -108,7 +115,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(restartCount, 1);
   assert.equal(settings.getString("seerr.apiKey"), "never-return-seerr", "legacy settings saves keep Seerr credentials");
   const withSeerr = { ...settingsPayload(), seerr: { url: "http://seerr:5055", apiKey: { action: "replace", value: "new-seerr-secret" }, preferForRequests: true, userMappings: "107286271453356032:1", defaultUserId: 1 }, repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: true } };
-  const connected = await app.inject({ method: "PUT", url: "/api/settings", payload: withSeerr });
+  const connected = await inject({ method: "PUT", url: "/api/settings", payload: withSeerr });
   assert.equal(connected.statusCode, 200);
   assert.doesNotMatch(connected.body, /new-seerr-secret/);
   assert.equal(connected.json().settings.seerr.apiKey.configured, true);
@@ -116,16 +123,16 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(connected.json().settings.repair.allowDirectAdd, true);
   assert.equal(settings.getString("seerr.apiKey"), "new-seerr-secret");
   assert.equal((db.prepare("SELECT secret FROM app_settings WHERE key = 'seerr.apiKey'").get() as { secret: number }).secret, 1);
-  const invalidMapping = await app.inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, userMappings: "name:1" } } });
+  const invalidMapping = await inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, userMappings: "name:1" } } });
   assert.equal(invalidMapping.statusCode, 400);
   assert.equal(settings.getString("seerr.userMappings"), "107286271453356032:1");
-  const cleared = await app.inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, apiKey: { action: "clear" } } } });
+  const cleared = await inject({ method: "PUT", url: "/api/settings", payload: { ...withSeerr, seerr: { ...withSeerr.seerr, apiKey: { action: "clear" } } } });
   assert.equal(cleared.statusCode, 200);
   assert.equal(cleared.json().settings.seerr.apiKey.configured, false);
 
-  assert.equal((await app.inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
-  assert.deepEqual((await app.inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
-  assert.deepEqual((await app.inject({ method: "GET", url: "/api/pi-models" })).json(), {
+  assert.equal((await inject({ method: "GET", url: "/api/memory/sessions" })).statusCode, 404);
+  assert.deepEqual((await inject({ method: "GET", url: "/api/tasks" })).json(), { tasks: [] });
+  assert.deepEqual((await inject({ method: "GET", url: "/api/pi-models" })).json(), {
     models: [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
   });
   const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
@@ -133,26 +140,26 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   repairs.addActivity(repair.id, "progress", "I am checking it", "agent");
   repairs.addMessage(repair.id, { role: "assistant", content: "I am checking it", sourceMessageId: "discord-bot" });
   repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
-  const webhookConfig = await app.inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
+  const webhookConfig = await inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
   assert.equal(webhookConfig.statusCode, 200);
   const sonarrUrl = webhookConfig.json().sonarrUrl as string;
   const webhookPath = new URL(sonarrUrl).pathname;
-  const webhook = await app.inject({ method: "POST", url: webhookPath, payload: { eventType: "Download", episodes: [{ id: 42 }], downloadId: "download-one" } });
+  const webhook = await inject({ method: "POST", url: webhookPath, payload: { eventType: "Download", episodes: [{ id: 42 }], downloadId: "download-one" } });
   assert.equal(webhook.statusCode, 202);
   assert.equal(webhook.json().matched, 1);
   assert.equal(repairs.get(repair.id)?.status, "ready");
-  const repairList = await app.inject({ method: "GET", url: "/api/repairs" });
+  const repairList = await inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
-  const timeline = (await app.inject({ method: "GET", url: `/api/repairs/${repair.id}/timeline` })).json().timeline;
+  const timeline = (await inject({ method: "GET", url: `/api/repairs/${repair.id}/timeline` })).json().timeline;
   assert.equal(timeline.some((entry: { type: string; source: string; actor?: string }) => entry.type === "user_message" && entry.source === "user" && entry.actor === "user"), true);
   assert.equal(timeline.filter((entry: { message?: string }) => entry.message === "I am checking it").length, 1);
   assert.equal(timeline.some((entry: { source: string; actor?: string }) => entry.source === "bot" && entry.actor === "agent"), true);
-  const clearedRepairs = await app.inject({ method: "DELETE", url: "/api/repairs" });
+  const clearedRepairs = await inject({ method: "DELETE", url: "/api/repairs" });
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);
-  assert.deepEqual((await app.inject({ method: "GET", url: "/api/repairs" })).json(), { repairs: [] });
-  assert.equal((await app.inject({ method: "GET", url: "/api/not-real" })).statusCode, 404);
-  assert.match((await app.inject({ method: "GET", url: "/connections" })).body, /Repairman/);
+  assert.deepEqual((await inject({ method: "GET", url: "/api/repairs" })).json(), { repairs: [] });
+  assert.equal((await inject({ method: "GET", url: "/api/not-real" })).statusCode, 404);
+  assert.match((await inject({ method: "GET", url: "/connections" })).body, /Repairman/);
 });
 
 function settingsPayload(overrides: { sonarrUrl?: string; discordToken?: { action: "keep" | "clear" }; serviceTier?: "default" | "priority" } = {}) {
