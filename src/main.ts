@@ -14,6 +14,7 @@ import { advancePlexVerification, plexVerificationBlockedMessage } from "./agent
 import { SecretBox } from "./storage/secrets.js";
 import { SettingsStore } from "./storage/settings.js";
 import { createWebServer } from "./web/server.js";
+import { PortalAuthService } from "./web/portal-auth.js";
 
 const config = loadConfig();
 fs.mkdirSync(config.configDir, { recursive: true });
@@ -23,6 +24,8 @@ const logger = createLogger(config);
 const db = openDatabase(config);
 const secrets = SecretBox.open(config.secretsKeyPath);
 const settings = new SettingsStore(db, secrets);
+const portalAuth = new PortalAuthService(settings, config.configDir, config.portalSecureCookie);
+if (!portalAuth.configured) logger.info({ setupTokenPath: portalAuth.setupTokenPath }, "Portal setup required. Read the one-time token from this file to create the administrator account.");
 const conversations = new ConversationStore(db);
 const toolAgentTasks = new ToolAgentTaskStore(db);
 const repairCases = new RepairCaseStore(db);
@@ -157,7 +160,7 @@ conversationPruneTimer.unref();
 
 await discord.start();
 
-const web = await createWebServer(settings, toolAgentQueue, discord, piAuth, logger, undefined, repairCases, repairCaseService);
+const web = await createWebServer(settings, toolAgentQueue, discord, piAuth, portalAuth, logger, undefined, repairCases, repairCaseService);
 await web.listen({ host: config.httpHost, port: config.httpPort });
 
 logger.info({ host: config.httpHost, port: config.httpPort, configDir: config.configDir }, "Plex Repairman started");

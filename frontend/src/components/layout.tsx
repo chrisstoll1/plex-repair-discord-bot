@@ -1,8 +1,9 @@
-import { Activity, Bot, Cable, Menu, Stethoscope, Wrench } from "lucide-react";
+import { Activity, Bot, Cable, Menu, Shield, Stethoscope, Wrench } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { Button, Drawer } from "./ui";
+import { api } from "../lib/api";
 
 const navigation = [
   { to: "/", label: "Overview", icon: Activity },
@@ -10,6 +11,7 @@ const navigation = [
   { to: "/bot-settings", label: "Bot Settings", icon: Bot },
   { to: "/tasks", label: "Agent Tasks", icon: Wrench },
   { to: "/repairs", label: "Ongoing Repairs", icon: Stethoscope },
+  { to: "/account", label: "Account", icon: Shield },
 ];
 
 const repositoryUrl = "https://github.com/chrisstoll1/plex-repair-discord-bot";
@@ -34,7 +36,8 @@ function Sidebar({ close }: { close?: () => void }) {
 
 export function AppLayout() {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  return <div className="min-h-screen bg-ink text-zinc-100"><aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-line bg-[#141619]/95 px-4 py-5 md:block"><Sidebar /></aside><Drawer open={drawerOpen} onOpenChange={setDrawerOpen}><Sidebar close={() => setDrawerOpen(false)} /></Drawer><div className="relative md:pl-64"><header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-xl sm:px-6 lg:px-10"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" className="md:hidden" onClick={() => setDrawerOpen(true)} aria-label="Open navigation"><Menu className="h-5 w-5" /></Button><span className="text-sm text-zinc-400">Plex Repairman</span></div><div className="flex items-center gap-2 text-xs text-zinc-500"><span className="h-2 w-2 rounded-full bg-signal" /><span>Running</span></div></header><main className="mx-auto max-w-[1440px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10"><Outlet /></main></div></div>;
+  const [signOutError, setSignOutError] = useState("");
+  return <div className="min-h-screen bg-ink text-zinc-100"><aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-line bg-[#141619]/95 px-4 py-5 md:block"><Sidebar /></aside><Drawer open={drawerOpen} onOpenChange={setDrawerOpen}><Sidebar close={() => setDrawerOpen(false)} /></Drawer><div className="relative md:pl-64"><header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-xl sm:px-6 lg:px-10"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" className="md:hidden" onClick={() => setDrawerOpen(true)} aria-label="Open navigation"><Menu className="h-5 w-5" /></Button><span className="text-sm text-zinc-400">Plex Repairman</span></div><div className="flex items-center gap-2 text-xs text-zinc-500"><span className="h-2 w-2 rounded-full bg-signal" /><span>Running</span><Button variant="ghost" size="sm" onClick={() => void api.logoutPortal().catch(() => setSignOutError("Could not sign out. Try again."))}>Sign out</Button></div></header>{signOutError && <p role="alert" className="px-6 pt-4 text-sm text-red-300">{signOutError}</p>}<main className="mx-auto max-w-[1440px] px-4 py-7 sm:px-6 lg:px-10 lg:py-10"><Outlet /></main></div></div>;
 }
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description: string; actions?: React.ReactNode }) {

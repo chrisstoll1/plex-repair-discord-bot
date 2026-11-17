@@ -21,6 +21,7 @@ import type { DiscordBotService } from "../discord/bot.js";
 import type { PiAuthService, PiAuthSnapshot } from "../agent/pi-auth.js";
 import type { RepairCaseService } from "../agent/repair-case-service.js";
 import type { RepairCase, RepairCaseActivity, RepairCaseStore } from "../storage/repair-cases.js";
+import { registerPortalAuth, type PortalAuthService } from "./portal-auth.js";
 
 const nonEmptyTrimmedString = z.string().trim().min(1);
 const optionalUrl = z.union([z.literal(""), z.string().trim().url()]);
@@ -89,16 +90,19 @@ export async function createWebServer(
   toolAgentQueue: ToolAgentQueueService,
   discord: DiscordBotService,
   piAuth: PiAuthService,
+  portalAuth: PortalAuthService,
   logger: Logger,
   webRoot = path.resolve(process.cwd(), "dist/web/public"),
   repairCases?: RepairCaseStore,
   repairCaseService?: RepairCaseService,
 ) {
-  const app = Fastify({ loggerInstance: logger });
+  const app = Fastify({ loggerInstance: logger, logController: new Fastify.LogController({ disableRequestLogging: true }) });
+
+  registerPortalAuth(app, portalAuth);
 
   app.setErrorHandler((error, _request, reply) => {
     const errorRecord = typeof error === "object" && error !== null ? (error as { statusCode?: number; message?: string }) : {};
-    const statusCode = errorRecord.statusCode && errorRecord.statusCode >= 400 && errorRecord.statusCode < 500 ? errorRecord.statusCode : 500;
+    const statusCode = error instanceof z.ZodError ? 400 : errorRecord.statusCode && errorRecord.statusCode >= 400 && errorRecord.statusCode < 500 ? errorRecord.statusCode : 500;
     if (statusCode === 500) logger.error({ err: error }, "Unhandled web API error");
     reply.status(statusCode).send({
       error: {

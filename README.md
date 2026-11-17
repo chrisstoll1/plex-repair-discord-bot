@@ -29,7 +29,7 @@ Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
 
 ## Safety
 
-The web portal has no built-in authentication. Keep it on a trusted network or place it behind a reverse proxy with access controls. Portal users can change credentials and policies and inspect or delete retained conversation and agent-task data.
+The web portal requires a single administrator password. First-time setup requires a one-time token from the configuration volume. Sessions expire after 12 hours or an application restart. The administrator can change credentials and policies and inspect or delete retained conversation and agent-task data. Keep the portal on a trusted network or use an HTTPS reverse proxy; set `PORTAL_SECURE_COOKIE=true` for HTTPS-only cookies. See [SECURITY.md](SECURITY.md) for the security model.
 
 Repair execution is disabled by default:
 
@@ -63,8 +63,18 @@ services:
       HTTP_PORT: 3000
       LOG_LEVEL: info
     volumes:
-      - ./config:/config
+      - repairman-config:/config
     restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+
+volumes:
+  repairman-config:
 ```
 
 Start the container and open the portal:
@@ -85,12 +95,12 @@ Scanner diagnostics use Plex's `/diagnostics/logs` ZIP download with the configu
 
 Movie match repairs use the modern Plex Movie agent and Plex's metadata provider to verify an exact TMDB/IMDb identity. Split Apart requires a current snapshot of every part ID and file path; Fix Match requires one isolated part and a uniquely verified match candidate. Both follow the configured repair-role and confirmation policy. They do not delete media. After splitting, the bot must rediscover item IDs by file path and verify both movies before reporting success.
 
-For TrueNAS SCALE, use the same Compose configuration in a Custom App and replace `./config` with a dataset path such as `/mnt/tank/apps/plex-repairman/config`.
+For Docker-based TrueNAS releases (24.10 and newer), the Custom App YAML accepts the same Compose configuration. To use an existing dataset, replace `repairman-config:/config` with a dataset path such as `/mnt/tank/apps/plex-repairman/config:/config` and grant the runtime user read/write access to that dataset. The image defaults to UID/GID `1000:1000`; the catalog package defaults to TrueNAS `568:568`. No media mounts, Docker socket, host management API, GPU or privileged mode are required. The native catalog package and submission procedure are in [packaging/truenas](packaging/truenas/README.md).
 
 ## First-Time Setup
 
-1. Open `http://<host>:3000/connections`.
-2. Enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
+1. Open `http://<host>:3000`. Read the one-time setup token from `/config/portal-setup-token` in the container shell or configuration dataset, and use it to create an administrator password of at least 12 characters. For Compose, run `docker compose exec plex-repairman cat /config/portal-setup-token` locally. The token is removed after setup; it is never written to application logs. In TrueNAS, open the app's Shell and run `cat /config/portal-setup-token`.
+2. Open `Connections` and enter the Discord bot token and your Plex, Sonarr, and Radarr connection details.
    Optionally add Seerr's URL and API key. Requests use Seerr's configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
 3. Enter the Discord application ID if you want the global `/health` slash command.
 4. Connect OpenAI Codex using the device-code panel.
@@ -134,6 +144,7 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | `HTTP_HOST` | `0.0.0.0` | Web server bind address |
 | `HTTP_PORT` | `3000` | Web server port |
 | `LOG_LEVEL` | `info` | Application log level |
+| `PORTAL_SECURE_COOKIE` | `false` | Set `true` when accessing the portal through HTTPS; direct HTTP cannot use secure cookies |
 
 ### Persistent Files
 
@@ -142,10 +153,37 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, processed messages, and agent-task history |
 | `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
 | `/config/pi/auth.json` | Pi/OpenAI authentication data |
+| `/config/portal-setup-token` | One-time administrator setup token, present only until setup is completed |
 
 Ordinary settings and retained message/task data are not encrypted. The database and `secrets.key` belong together; losing the key makes encrypted service credentials unrecoverable.
 
 Repair threads retain their complete conversation context with the repair case. Older context is compacted for model prompts when necessary but remains available through case-history lookup.
+
+### Upgrading and Backup
+
+Stop the app before taking a filesystem copy of `/config`, or use a coordinated dataset snapshot while the app is stopped. Back up the entire volume, including the SQLite database, any WAL/SHM files, `secrets.key` and `pi/`. Restore them together. Never copy only the database or replace its key with a new one.
+
+When upgrading from a 0.1 image:
+
+1. Stop the app and back up its configuration dataset.
+2. Grant the configured non-root runtime UID/GID read/write access to the existing configuration tree. On an ordinary Linux bind mount using the default image user, the owner is `1000:1000`. TrueNAS catalog defaults use `568:568`; use Dataset Permissions/ACLs to grant access. The permissions helper initializes empty datasets; it deliberately does not recursively change ownership of existing data. Do not change ownership of your media datasets.
+3. Start the new image with the same `/config` volume. Existing settings, encrypted credentials, AI authentication and repair history are retained.
+4. Complete administrator setup using the generated token. Existing reverse-proxy Basic authentication may remain enabled; the application login is an additional step.
+5. Verify `/health`, portal access, service connectivity and retained repairs before enabling further work.
+
+For rollback, stop the app, restore the complete pre-upgrade backup and use its previous exact image tag or digest. Avoid running an older image against a database already changed by a newer version.
+
+### Administrator Password Recovery
+
+Change a known password from `Account` in the portal. To recover a lost password, stop the app, reset only the administrator credential using the same image and configuration mount, then start it again. For Compose:
+
+```bash
+docker compose stop plex-repairman
+docker compose run --rm --no-deps --entrypoint node plex-repairman scripts/reset-portal-password.mjs --confirm
+docker compose up -d plex-repairman
+```
+
+Read the newly available `/config/portal-setup-token` locally and create a new password. This preserves media credentials, policies, AI authentication and repair history. In TrueNAS, stop the app and use a temporary container of the same image with its configuration dataset and runtime UID/GID mounted to run that command, then remove the temporary container and restart the app. Do not expose the dataset or share the setup token. Do not delete the database or `secrets.key` to reset a portal password.
 
 ## Example Requests
 
@@ -171,16 +209,19 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Images are published from `master` with an automatic version based on the GitHub Actions run number. For example, workflow run 32 produces application version `0.1.32`; local builds display `dev`. Manual runs on other branches validate and build the image without publishing it.
+Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.0-build.65.1`. A matching `v0.2.0` Git tag publishes stable image version `0.2.0` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
 
 | Tag | Use |
 | --- | --- |
 | `latest` | Current mutable build from `master` |
-| `0.1.<run-number>` | Automatic build version; points to the latest successful attempt for that run |
+| `0.2.0` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
+| `0.2.0-build.<run>.<attempt>` | Automatic build from `master` |
 | `build-<run-number>.<run-attempt>` | Exact workflow attempt, including reruns |
 | `sha-<commit-sha>` | Build for a specific source commit |
 
 The web menu links the displayed version to this repository. Use an exact build-attempt tag or image digest when reproducible deployment or rollback is important.
+
+Application sessions authenticate the administration API; reverse-proxy Basic credentials alone no longer authorize API requests. `/health` and secret-authenticated webhook endpoints do not require a portal session. HTTPS proxy users should enable secure cookies. Backups and application logs should be kept private.
 
 ## Development
 
@@ -193,6 +234,16 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+Image and catalog installation checks use disposable synthetic configurations and never access your running media services:
+
+```bash
+docker compose build plex-repairman
+node scripts/smoke-container.mjs plex-repairman:dev
+node scripts/check-truenas-catalog.mjs --image plex-repairman:dev
+```
+
+These checks require Docker and Git. Catalog validation uses the pinned upstream repository and validation image in `packaging/truenas/toolchain.json`. It tests both managed-volume and host-path templates, non-default ports, non-root users, health and first-time setup. The image smoke checks also cover a legacy-data fixture, restart persistence, backup/restore, secret-authenticated webhooks and offline password recovery.
 
 Run the API and Vite development servers in separate terminals:
 

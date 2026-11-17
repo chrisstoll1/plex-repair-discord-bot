@@ -16,6 +16,7 @@ RUN npm run build
 FROM node:24-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
+    HOME=/config \
     CONFIG_DIR=/config \
     HTTP_HOST=0.0.0.0 \
     HTTP_PORT=3000
@@ -28,6 +29,9 @@ COPY package*.json ./
 COPY scripts ./scripts
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+
+RUN mkdir -p /config && chown node:node /config
+USER node
 
 VOLUME ["/config"]
 EXPOSE 3000

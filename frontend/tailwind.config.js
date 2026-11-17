@@ -11,7 +11,7 @@ export default {
         cyan: "#7aa7d9",
       },
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui"],
+        sans: ["Inter Variable", "ui-sans-serif", "system-ui"],
         mono: ["IBM Plex Mono", "ui-monospace", "monospace"],
       },
       boxShadow: {
