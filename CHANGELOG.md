@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Replace mandatory administrator setup and session login with optional HTTP Basic authentication, configured by a toggle and username/password fields in Bot settings. Authentication defaults off for fresh installs.
+- Remove setup-token provisioning, the account page and session-cookie configuration. Existing completed 0.2.0 accounts migrate to enabled Basic auth as admin with the same password; unfinished setups open normally.
+- Retain password hashing, login throttling, request forgery protection and offline recovery. Update catalog configuration, installation tests and documentation for the simpler flow.
+
 ## 0.2.0
 
 - Require a portal administrator password. First-time setup uses a one-time token from the configuration volume; existing bot settings, credentials and repair history remain intact.

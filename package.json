@@ -1,6 +1,6 @@
 {
   "name": "plex-repairman",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,8 @@
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit && npm --prefix frontend run typecheck",
     "test": "npm run test:server && npm --prefix frontend test",
-    "test:server": "tsx --test tests/**/*.test.ts"
+    "test:server": "tsx --test tests/**/*.test.ts",
+    "audit:frontend": "node scripts/audit-frontend.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.5.2",

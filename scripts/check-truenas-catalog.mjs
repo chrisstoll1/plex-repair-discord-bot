@@ -72,9 +72,9 @@ try {
         const id = docker(...composeArgs, "ps", "-q", "plex-repairman");
         const exposed = JSON.parse(docker("inspect", "--format", "{{json .NetworkSettings.Ports}}", id));
         const port = exposed[`${app.environment.HTTP_PORT}/tcp`][0].HostPort;
-        const response = await fetch(`http://127.0.0.1:${port}/api/auth/session`);
+        const response = await fetch(`http://127.0.0.1:${port}/api/portal-auth`);
         assert.equal(response.status, 200);
-        assert.deepEqual(await response.json(), { authenticated: false, setupRequired: true });
+        assert.deepEqual(await response.json(), { enabled: false, username: "admin", passwordConfigured: false });
         assert.equal(docker(...composeArgs, "exec", "-T", "plex-repairman", "id", "-u"), app.user.split(":")[0]);
         console.log(`Passed catalog installation: ${name}, user ${app.user}, target port ${app.environment.HTTP_PORT}.`);
       } catch (error) {

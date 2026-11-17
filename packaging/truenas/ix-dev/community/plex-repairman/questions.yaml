@@ -25,13 +25,6 @@ questions:
   label: ''
   schema:
     attrs:
-    - variable: secure_cookie
-      label: HTTPS-only session cookie
-      description: Enable when opening the portal through an HTTPS reverse proxy.
-        Keep disabled for direct LAN HTTP access.
-      schema:
-        type: boolean
-        default: false
     - label: Additional Environment Variables
       schema:
         default: []

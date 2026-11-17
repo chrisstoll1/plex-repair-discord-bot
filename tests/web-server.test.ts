@@ -81,9 +81,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const setup = await app.inject({ method: "POST", url: "/api/auth/setup", headers: { "x-repairman-request": "1" }, payload: { token: fs.readFileSync(portalAuth.setupTokenPath, "utf8").trim(), password: "test-admin-password" } });
-  assert.equal(setup.statusCode, 200);
-  const inject = (options: InjectOptions) => app.inject({ ...options, headers: { cookie: String(setup.headers["set-cookie"]).split(";")[0], "x-repairman-request": "1", "x-csrf-token": setup.json().csrfToken, ...options.headers } });
+  const inject = (options: InjectOptions) => app.inject({ ...options, headers: { "x-repairman-request": "1", ...options.headers } });
   const read = await inject({ method: "GET", url: "/api/settings" });
   assert.equal(read.statusCode, 200);
   assert.deepEqual(read.json().settings.discord.token, { configured: true });
