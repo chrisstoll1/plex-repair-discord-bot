@@ -1,8 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  AlertCircle,
   Check,
-  CheckCircle2,
   Clipboard,
   ExternalLink,
   Eye,
@@ -11,7 +9,6 @@ import {
   LoaderCircle,
   LogOut,
   Pencil,
-  Play,
   Plus,
   RefreshCw,
   Server,
@@ -29,7 +26,6 @@ import {
   type CustomProviderApi,
   type CustomProviderInput,
   type PiAuthSnapshot,
-  type PiModelTestResult,
 } from "../lib/api";
 import { cn, formatDate } from "../lib/utils";
 
@@ -105,8 +101,6 @@ export function PiAuthPanel() {
   const [showCustomKey, setShowCustomKey] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<AiProviderAuthSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AiProviderAuthSummary | null>(null);
-  const [providerTests, setProviderTests] = useState<Record<string, PiModelTestResult>>({});
-  const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const prevPendingRef = useRef(false);
 
   const auth = useQuery({
@@ -230,27 +224,6 @@ export function PiAuthPanel() {
       toast({ tone: "success", title: `Found ${models.length} model${models.length === 1 ? "" : "s"}` });
     },
     onError: (error) => toast({ tone: "error", title: "Model discovery failed", description: error.message }),
-  });
-
-  const testProvider = useMutation({
-    mutationFn: (providerId: string) => api.testPiModel({ providerId }),
-    onMutate: (providerId) => setTestingProviderId(providerId),
-    onSuccess: (result, providerId) => {
-      setProviderTests((current) => ({ ...current, [providerId]: result }));
-      toast({
-        tone: result.ok ? "success" : "error",
-        title: result.ok ? `${providerId} responded (${result.latencyMs}ms)` : `${providerId} test failed`,
-        description: result.ok ? `${result.modelId}: ${result.reply}` : result.error,
-      });
-    },
-    onError: (error, providerId) => {
-      setProviderTests((current) => ({
-        ...current,
-        [providerId]: { ok: false, provider: providerId, modelId: "", latencyMs: 0, error: error.message },
-      }));
-      toast({ tone: "error", title: `${providerId} test failed`, description: error.message });
-    },
-    onSettled: () => setTestingProviderId(null),
   });
 
   if (auth.isPending) return <Card><LoadingState label="Checking AI providers" /></Card>;
@@ -485,40 +458,10 @@ export function PiAuthPanel() {
                         {provider.refresh?.error && (
                           <p className="mt-1 text-[11px] text-red-400">{provider.refresh.error}</p>
                         )}
-                        {providerTests[provider.id] && (
-                          <div
-                            className={cn(
-                              "mt-2 flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-[11px] leading-4",
-                              providerTests[provider.id]!.ok
-                                ? "border-signal/25 bg-signal/[.06] text-signal"
-                                : "border-red-500/25 bg-red-500/[.06] text-red-300",
-                            )}
-                          >
-                            {providerTests[provider.id]!.ok ? (
-                              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
-                            ) : (
-                              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-                            )}
-                            <span className="break-words">
-                              {providerTests[provider.id]!.ok
-                                ? `Test passed (${providerTests[provider.id]!.modelId}, ${providerTests[provider.id]!.latencyMs}ms): ${providerTests[provider.id]!.reply}`
-                                : `Test failed: ${providerTests[provider.id]!.error}`}
-                            </span>
-                          </div>
-                        )}
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line/60 pt-3">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={testingProviderId === provider.id}
-                        onClick={() => testProvider.mutate(provider.id)}
-                      >
-                        {testingProviderId === provider.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        Test
-                      </Button>
                       {provider.kind === "custom" ? (
                         <>
                           <Button variant="secondary" size="sm" onClick={() => beginEditCustom(provider)}>

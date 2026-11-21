@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Eye, EyeOff, LoaderCircle, Play, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Eye, EyeOff, FlaskConical, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
 import { api, type AiFallbackTarget, type AiModel, type PiModelTestResult, type Settings } from "../lib/api";
@@ -213,7 +213,7 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           aria-label="Test primary model"
           className="h-10 shrink-0 px-3.5"
         >
-          {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
           Test
         </Button>
       </div>
@@ -285,7 +285,7 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
               aria-label={`Test fallback ${index + 1} model`}
               className="h-10 shrink-0 px-3.5"
             >
-              {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
               Test
             </Button>
           </div>

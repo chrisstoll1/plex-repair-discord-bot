@@ -128,22 +128,4 @@ describe("PiAuthPanel", () => {
       }),
     );
   });
-
-  it("tests a connected provider and displays the inline result", async () => {
-    vi.spyOn(api, "getPiAuth").mockResolvedValue(baseSnapshot);
-    const testModel = vi.spyOn(api, "testPiModel").mockResolvedValue({
-      ok: true,
-      provider: "openai-codex",
-      modelId: "gpt-6.1-sol",
-      latencyMs: 123,
-      reply: "OK",
-    });
-
-    renderPanel();
-    expect(await screen.findByText("AI providers & authentication")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Test" }));
-    await waitFor(() => expect(testModel).toHaveBeenCalledWith({ providerId: "openai-codex" }));
-    expect(await screen.findByText(/Test passed \(gpt-6\.1-sol, 123ms\): OK/)).toBeInTheDocument();
-  });
 });
