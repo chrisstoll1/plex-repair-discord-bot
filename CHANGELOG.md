@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- Add multi-provider AI authentication supporting OAuth sign-in (OpenAI Codex, Anthropic, GitHub Copilot, xAI, Kimi), API keys (Anthropic, OpenAI, Google Gemini, OpenRouter, xAI, DeepSeek, Groq, Mistral, GitHub Copilot, Kimi), and custom OpenAI/Anthropic-compatible endpoints.
+- Add an ordered primary and fallback model hierarchy with automatic runtime fallback, live Pi remote model catalog support, and inline connectivity testing on each configured model row.
+- Record and display the actual AI model and fallback usage on Overview, Repairs, repair timelines, and Agent tasks.
+- Refine Settings layouts with full-width AI model hierarchy and side-by-side thinking, service tier, and timeout controls, plus a consistent full-width bottom save bar across all Settings tabs including unified Connections and webhook saving.
+- Recover cleanly from local Pi credential synchronization errors and clear stale refresh errors once valid credentials are stored.
+
 ## 0.2.2
 
 - Paginate repairs, agent tasks and repair timelines, with complete history counts and repair status filters across all records. Keep toggles at a fixed size and show disconnected AI accounts in red.

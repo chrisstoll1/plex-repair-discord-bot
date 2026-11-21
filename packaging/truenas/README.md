@@ -1,8 +1,6 @@
 # TrueNAS catalog package
 
-This directory contains the source for a new **community** app in [truenas/apps](https://github.com/truenas/apps). The catalog entry targets the public, digest-verified **0.2.2** image as initial catalog version **1.0.0**. Earlier catalog version numbers were provisional; no catalog version has been published yet.
-
-Submission: [app-request issue #6559](https://github.com/truenas/apps/issues/6559) and [app-addition PR #6560](https://github.com/truenas/apps/pull/6560). The public Discover Apps listing is pending upstream review, merge and catalog publication. The [review bundle](https://github.com/chrisstoll1/plex-repair-discord-bot/releases/download/v0.2.2/plex-repairman-truenas-catalog-1.0.0.zip) and [checksum](https://github.com/chrisstoll1/plex-repair-discord-bot/releases/download/v0.2.2/plex-repairman-truenas-catalog-1.0.0.sha256) include the current port and refreshed synthetic-data screenshots.
+This directory contains the source for the **community** app in [truenas/apps](https://github.com/truenas/apps). The catalog entry targets the public, digest-verified **0.2.3** image as catalog version **1.0.1** (initial catalog version **1.0.0** for 0.2.2 was merged in [app-addition PR #6560](https://github.com/truenas/apps/pull/6560)).
 
 The package follows the upstream [contribution guide](https://github.com/truenas/apps/blob/master/CONTRIBUTIONS.md). It includes metadata, generated listing data, install/edit questions, a Compose template and two storage test cases. `toolchain.json` pins the upstream source and validation image used to verify it. Generated rendering libraries and rendered Compose files are deliberately excluded from Git.
 
@@ -42,11 +40,11 @@ node scripts/check-truenas-catalog.mjs --write --image plex-repairman:dev
 ## Release and submission
 
 1. Merge the reviewed application changes into **master** and let the Container checks pass. Publishing an image does not itself restart a TrueNAS app; existing production deployments remain a separate operation.
-2. Create the Git tag **v0.2.2** on the reviewed master commit. The Container workflow requires the tag to match package.json and its commit to belong to master. It checks dependencies, tests the application and catalog installations, then publishes the stable image and exact source/build tags. Wait for the intended workflow to succeed.
+2. Create the Git tag **v0.2.3** on the reviewed master commit. The Container workflow requires the tag to match package.json and its commit to belong to master. It checks dependencies, tests the application and catalog installations, then publishes the stable image and exact source/build tags. Wait for the intended workflow to succeed.
 3. Export a submission with the verified public image digest:
 
    ```bash
-   node scripts/prepare-truenas-release.mjs --output .agent-local/truenas-submission-0.2.2
+   node scripts/prepare-truenas-release.mjs --output .agent-local/truenas-submission-0.2.3
    ```
 
    The exporter refuses an unpublished release, a mismatched version label, a root-default image, a wrong platform or an existing destination. It records the source revision and pins the manifest digest. It does not publish anything or change production.
@@ -55,6 +53,6 @@ node scripts/check-truenas-catalog.mjs --write --image plex-repairman:dev
 6. Attach assets from **assets/** for reviewer upload to the TrueNAS CDN. The metadata contains the planned CDN locations; they are not claimed to be live before review. Update the URLs if the reviewer supplies different locations.
 7. Address automated and maintainer review. Acceptance is decided by TrueNAS maintainers. Upstream policy excludes apps that require the TrueNAS management API or pose known data-integrity risks; this package requires no host-management access, and optional destructive media operations remain disabled by default.
 
-Do not submit a catalog entry pointing to an unpublished 0.2.2 image or to the mutable latest tag. Keep production restarts separate from catalog submission and follow the repository's deployment workflow when one is authorized.
+Do not submit a catalog entry pointing to an unpublished 0.2.3 image or to the mutable latest tag. Keep production restarts separate from catalog submission and follow the repository's deployment workflow when one is authorized.
 
 The GHCR package must be public. Repository visibility does not automatically make a container package public. Ensure anonymous image downloads work before submission. An owner can change the [container package visibility](https://github.com/users/chrisstoll1/packages/container/plex-repair-discord-bot/settings) before export and submission. See [GitHub's package visibility instructions](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
