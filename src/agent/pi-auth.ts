@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { CredentialSynchronizationError, ModelRuntime, readStoredCredential, type CreateModelRuntimeOptions } from "@earendil-works/pi-coding-agent";
 import type { AppConfig } from "../config.js";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
@@ -275,7 +275,7 @@ export class PiAuthService {
   }
 
   private createRuntime(): Promise<ModelRuntime> {
-    return ModelRuntime.create({ authPath: this.authPath, modelsPath: this.modelsPath });
+    return ModelRuntime.create(createPiModelRuntimeOptions(path.dirname(this.authPath)));
   }
 
   private async reloadRuntime(): Promise<ModelRuntime> {
@@ -324,7 +324,13 @@ export class PiAuthService {
 
     for (const providerId of providerIds) {
       const credential = readStoredCredential(providerId, this.authPath);
-      if (credential?.type !== "oauth" || Date.now() < credential.expires) continue;
+      if (credential?.type !== "oauth" || Date.now() < credential.expires) {
+        const existing = this.refreshByProvider.get(providerId);
+        if (existing?.error) {
+          this.refreshByProvider.delete(providerId);
+        }
+        continue;
+      }
 
       const attemptedAt = new Date().toISOString();
       this.refreshByProvider.set(providerId, { attemptedAt });
@@ -438,7 +444,20 @@ export class PiAuthService {
           this.activeLogin = undefined;
         }
       })
-      .catch((error) => {
+      .catch(async (error) => {
+        if (error instanceof CredentialSynchronizationError) {
+          this.restrictAuthFilePermissions();
+          this.refreshByProvider.delete(providerId);
+          await this.reloadRuntime().catch(() => undefined);
+          activeLogin.status = "complete";
+          activeLogin.completedAt = new Date().toISOString();
+          activeLogin.inputPrompt = undefined;
+          activeLogin.progress = `${providerName} auth is configured.`;
+          if (this.activeLogin === activeLogin) {
+            this.activeLogin = undefined;
+          }
+          return;
+        }
         activeLogin.completedAt = new Date().toISOString();
         activeLogin.inputPrompt = undefined;
         activeLogin.status = activeLogin.abort.signal.aborted ? "cancelled" : "error";
@@ -512,17 +531,22 @@ export class PiAuthService {
     }
 
     const controller = new AbortController();
-    await runtime.login(providerId, "api_key", {
-      signal: controller.signal,
-      prompt: async (prompt) => {
-        if (prompt.type === "secret" || prompt.type === "text") return trimmed;
-        throw new Error(`Unsupported API key prompt "${prompt.type}" for provider "${providerId}".`);
-      },
-      notify: () => undefined,
-    });
+    try {
+      await runtime.login(providerId, "api_key", {
+        signal: controller.signal,
+        prompt: async (prompt) => {
+          if (prompt.type === "secret" || prompt.type === "text") return trimmed;
+          throw new Error(`Unsupported API key prompt "${prompt.type}" for provider "${providerId}".`);
+        },
+        notify: () => undefined,
+      });
+    } catch (error) {
+      if (!(error instanceof CredentialSynchronizationError)) throw error;
+      await this.reloadRuntime();
+    }
     this.restrictAuthFilePermissions();
     this.refreshByProvider.delete(providerId);
-    await this.refreshProviderCatalogBestEffort(runtime, providerId);
+    await this.refreshProviderCatalogBestEffort(await this.modelRuntime, providerId);
     return this.getSnapshot();
   }
 
@@ -585,11 +609,16 @@ export class PiAuthService {
       if (!keyValue) {
         throw Object.assign(new Error("API key cannot be blank."), { statusCode: 400 });
       }
-      await reloaded.login(id, "api_key", {
-        signal: new AbortController().signal,
-        prompt: async () => keyValue,
-        notify: () => undefined,
-      });
+      try {
+        await reloaded.login(id, "api_key", {
+          signal: new AbortController().signal,
+          prompt: async () => keyValue,
+          notify: () => undefined,
+        });
+      } catch (error) {
+        if (!(error instanceof CredentialSynchronizationError)) throw error;
+        await this.reloadRuntime();
+      }
       this.restrictAuthFilePermissions();
     }
 
@@ -679,7 +708,12 @@ export class PiAuthService {
     if (this.activeLogin?.providerId === providerId) {
       this.abortActiveLogin();
     }
-    await (await this.modelRuntime).logout(providerId);
+    try {
+      await (await this.modelRuntime).logout(providerId);
+    } catch (error) {
+      if (!(error instanceof CredentialSynchronizationError)) throw error;
+      await this.reloadRuntime();
+    }
     this.refreshByProvider.delete(providerId);
     return this.getSnapshot();
   }
@@ -816,7 +850,9 @@ export class PiAuthService {
               expired: credential.type === "oauth" ? Date.now() >= credential.expires : undefined,
             }
           : undefined,
-        refresh: this.refreshByProvider.get(id),
+        refresh: credential?.type === "oauth" && Date.now() < credential.expires
+          ? (this.refreshByProvider.get(id)?.error ? undefined : this.refreshByProvider.get(id))
+          : this.refreshByProvider.get(id),
         custom: isCustom && customConfig
           ? {
               baseUrl: customConfig.baseUrl ?? "",
@@ -898,6 +934,42 @@ export class PiAuthService {
     } catch {
       return;
     }
+  }
+}
+
+export function createPiModelRuntimeOptions(piAgentDir: string): CreateModelRuntimeOptions {
+  const authPath = path.join(piAgentDir, "auth.json");
+  const modelsPath = path.join(piAgentDir, "models.json");
+  const modelsStorePath = path.join(piAgentDir, "models-store.json");
+  if (canReadWriteIfPresent(modelsStorePath)) {
+    return { authPath, modelsPath };
+  }
+  const entries = new Map<string, unknown>();
+  const modelsStore: NonNullable<CreateModelRuntimeOptions["modelsStore"]> = {
+    async read(providerId, options) {
+      options?.signal?.throwIfAborted();
+      const entry = entries.get(providerId);
+      return entry ? structuredClone(entry) as Awaited<ReturnType<NonNullable<CreateModelRuntimeOptions["modelsStore"]>["read"]>> : undefined;
+    },
+    async write(providerId, entry, options) {
+      options?.signal?.throwIfAborted();
+      entries.set(providerId, structuredClone(entry));
+    },
+    async delete(providerId, options) {
+      options?.signal?.throwIfAborted();
+      entries.delete(providerId);
+    },
+  };
+  return { authPath, modelsPath, modelsStore };
+}
+
+function canReadWriteIfPresent(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return true;
+    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 

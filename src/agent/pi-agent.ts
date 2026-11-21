@@ -27,6 +27,7 @@ import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRU
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
 import { AiAuthenticationError, classifyAiRequestError, ModelUnavailableError } from "./model-errors.js";
+import { createPiModelRuntimeOptions } from "./pi-auth.js";
 import { normalizeExternalWait, type ExternalWait } from "./external-wait.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -493,10 +494,7 @@ export class PiAgentService {
     fs.mkdirSync(this.config.piAgentDir, { recursive: true });
 
     const settings = readRuntimeSettings(this.store);
-    const modelRuntime = await ModelRuntime.create({
-      authPath: `${this.config.piAgentDir}/auth.json`,
-      modelsPath: `${this.config.piAgentDir}/models.json`,
-    });
+    const modelRuntime = await ModelRuntime.create(createPiModelRuntimeOptions(this.config.piAgentDir));
     const modelRegistry = new ModelRegistry(modelRuntime);
     const candidates = buildAiModelHierarchy(settings.ai);
 

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { CredentialSynchronizationError, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiAuthService } from "../src/agent/pi-auth.js";
 import type { AppConfig } from "../src/config.js";
 
@@ -136,4 +136,41 @@ test("Anthropic copy-code OAuth pauses for manual input and completes when submi
   const done = await service.submitLoginInput("abc#xyz", "anthropic");
   assert.equal(receivedCode, "abc#xyz");
   assert.equal(done.activeLogin, undefined);
+});
+
+test("recovers cleanly when OAuth login commits credentials but local sync throws CredentialSynchronizationError", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "repairman-sync-err-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const authPath = path.join(root, "auth.json");
+  fs.writeFileSync(authPath, JSON.stringify({
+    "openai-codex": { type: "oauth", access: "expired", refresh: "bad-refresh", expires: Date.now() - 60_000 },
+  }));
+
+  const runtime = await ModelRuntime.create({ authPath, modelsPath: null });
+  let createCalls = 0;
+  t.mock.method(ModelRuntime, "create", async () => {
+    createCalls += 1;
+    return runtime;
+  });
+  t.mock.method(runtime, "getAuth", async () => {
+    throw new Error("invalid_refresh_token");
+  });
+
+  const service = new PiAuthService({ piAgentDir: root } as AppConfig);
+  const failedRefresh = await service.refreshExpiredCredential();
+  assert.match(failedRefresh.providers.find((p) => p.id === "openai-codex")?.refresh?.error ?? "", /invalid_refresh_token/);
+
+  t.mock.method(runtime, "login", async () => {
+    const fresh = { type: "oauth" as const, access: "fresh-access", refresh: "fresh-refresh", expires: Date.now() + 86_400_000 };
+    fs.writeFileSync(authPath, JSON.stringify({ "openai-codex": fresh }));
+    throw new CredentialSynchronizationError("openai-codex", "login", fresh);
+  });
+
+  const afterLogin = await service.startLoginAndWaitForDeviceCode("openai-codex");
+  assert.equal(afterLogin.activeLogin, undefined);
+  const codex = afterLogin.providers.find((p) => p.id === "openai-codex");
+  assert.equal(codex?.configured, true);
+  assert.equal(codex?.credential?.expired, false);
+  assert.equal(codex?.refresh, undefined);
+  assert.ok(createCalls >= 2);
 });
