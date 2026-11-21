@@ -4,6 +4,8 @@ Plex Repairman separates read-only diagnosis from write actions. Policy checks r
 
 ## Policy Controls (**Settings → Repair policy** & **Settings → Discord**)
 
+![Settings — Repair policy safeguards](images/repair-policy.png)
+
 | Setting | Default | Effect |
 | --- | --- | --- |
 | **Require confirmation** | **On** | Posts temporary Discord **Confirm** / **Cancel** buttons describing one exact server-verified action before executing it. Turning this off allows direct non-destructive repairs for users who satisfy your repair-role policy. |
@@ -47,6 +49,8 @@ Plex Repairman separates read-only diagnosis from write actions. Policy checks r
   - Disabling a webhook converts its event waits into timers while preserving planned check times.
 
 ## Web Portal Navigation
+
+![Repairs queue and timeline with model attribution](images/repairs.png)
 
 The portal sidebar separates daily monitoring from configuration:
 

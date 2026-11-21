@@ -11,6 +11,21 @@ Plex Repairman is a self-hosted Discord bot and web portal for diagnosing and re
 - **Durable repair threads:** Each issue gets a dedicated public Discord thread that persists across restarts and resumes automatically from Sonarr/Radarr webhooks or scheduled checks.
 - **Self-contained web portal:** Configure connections, AI providers, policies, and optional form sign-in from the browser—no container shell access required.
 
+## Screenshots
+
+![Plex Repairman Overview](docs/images/overview.png)
+
+<details>
+<summary>More screenshots (Repairs &amp; timeline, AI providers &amp; fallback hierarchy)</summary>
+
+![Repairs and timeline](docs/images/repairs.png)
+
+![AI providers and authentication](docs/images/ai-providers.png)
+
+![AI model and fallback hierarchy](docs/images/ai-hierarchy.png)
+
+</details>
+
 ## Quick Start
 
 ### TrueNAS (Community Catalog)

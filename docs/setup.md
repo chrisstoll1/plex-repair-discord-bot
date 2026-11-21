@@ -39,6 +39,8 @@ Open **Settings → Discord** and fill in:
 
 ## 2. Media Services (**Settings → Connections**)
 
+![Settings — Connections](images/connections.png)
+
 Use direct Docker or LAN URLs reachable from the Plex Repairman container (for example `http://plex:32400`, `http://sonarr:8989`, `http://radarr:7878`, `http://seerr:5055`). Avoid routing service API calls through public tunnels or slow proxies, which may time out during long release lookups.
 
 ### Plex

@@ -4,6 +4,8 @@ Configure AI authentication, model fallback order, thinking level, and timeouts 
 
 You can connect multiple providers at the same time—models from every connected provider become available in the model hierarchy below.
 
+![Settings — AI providers and authentication](images/ai-providers.png)
+
 ## Supported Providers
 
 ### Built-in Providers
@@ -35,6 +37,8 @@ Choose **Custom endpoint** in **Settings → AI** to connect local or self-hoste
 Custom endpoint definitions are stored in `/config/pi/models.json`, and credentials are stored in `/config/pi/auth.json`.
 
 ## Model & Fallback Hierarchy
+
+![AI model and fallback hierarchy with inline connectivity testing](images/ai-hierarchy.png)
 
 Under **AI model & fallback hierarchy**:
 

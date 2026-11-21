@@ -9,6 +9,7 @@ test("rewriteLinksForWiki converts docs links to wiki slugs and parent links to 
   const input = [
     "[Setup](setup.md)",
     "[Ops](operations.md#backups-upgrades-and-rollback)",
+    "![AI](images/ai-providers.png)",
     "[Security](../SECURITY.md)",
     "[Catalog](../packaging/truenas/)",
     "[External](https://example.com)",
@@ -18,6 +19,7 @@ test("rewriteLinksForWiki converts docs links to wiki slugs and parent links to 
   const output = rewriteLinksForWiki(input);
   assert.match(output, /\[Setup\]\(Setup\)/);
   assert.match(output, /\[Ops\]\(Operations#backups-upgrades-and-rollback\)/);
+  assert.match(output, /!\[AI\]\(https:\/\/raw\.githubusercontent\.com\/chrisstoll1\/plex-repair-discord-bot\/master\/docs\/images\/ai-providers\.png\)/);
   assert.match(output, /\[Security\]\(https:\/\/github\.com\/chrisstoll1\/plex-repair-discord-bot\/blob\/master\/SECURITY\.md\)/);
   assert.match(output, /\[Catalog\]\(https:\/\/github\.com\/chrisstoll1\/plex-repair-discord-bot\/tree\/master\/packaging\/truenas\/\)/);
   assert.match(output, /\[External\]\(https:\/\/example\.com\)/);

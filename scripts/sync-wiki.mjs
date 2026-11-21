@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_URL = "https://github.com/chrisstoll1/plex-repair-discord-bot";
+const RAW_DOCS_URL = "https://raw.githubusercontent.com/chrisstoll1/plex-repair-discord-bot/master/docs";
 
 const PAGES = [
   { source: "setup.md", slug: "Setup", title: "Setup Guide", summary: "Discord bot setup, Plex/Sonarr/Radarr/Seerr connections, Seerr user mappings, and Arr webhooks." },
@@ -23,6 +24,9 @@ export function rewriteLinksForWiki(markdown) {
     const normalized = rawPath.replace(/^\.\//, "");
     const wikiSlug = SLUG_BY_SOURCE.get(normalized);
     if (wikiSlug) return `](${wikiSlug}${anchor})`;
+    if (normalized.startsWith("images/")) {
+      return `](${RAW_DOCS_URL}/${normalized})`;
+    }
     if (rawPath.startsWith("../")) {
       const repoPath = rawPath.replace(/^\.\.\//, "");
       const kind = repoPath.endsWith("/") ? "tree" : "blob";
@@ -39,6 +43,8 @@ export function buildHomePage() {
 Plex Repairman is a self-hosted Discord bot and web portal for diagnosing and repairing Plex, Sonarr, Radarr, and Seerr media issues.
 
 > This wiki is automatically synced from [\`docs/\`](${REPO_URL}/tree/master/docs) on \`master\`. Please make edits via pull requests to the main repository.
+
+![Plex Repairman Overview](${RAW_DOCS_URL}/images/overview.png)
 
 ## Guides
 
