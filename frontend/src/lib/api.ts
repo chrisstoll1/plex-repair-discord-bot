@@ -197,6 +197,15 @@ export type AiModel = {
   contextWindow: number;
 };
 
+export type PiModelTestResult = {
+  ok: boolean;
+  provider: string;
+  modelId: string;
+  latencyMs: number;
+  reply?: string;
+  error?: string;
+};
+
 export class ApiError extends Error {
   constructor(message: string, public status: number, public details?: unknown) {
     super(message);
@@ -290,6 +299,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(params),
     }).then((response) => response.models),
+  testPiModel: (params: { providerId: string; modelId?: string }) =>
+    request<{ result: PiModelTestResult }>("/api/pi-auth/test", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }).then((response) => response.result),
 };
 
 function toSettingsUpdate(settings: Settings): SettingsUpdate {

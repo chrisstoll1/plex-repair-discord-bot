@@ -239,6 +239,15 @@ export type PiModelSummary = {
   contextWindow: number;
 };
 
+export type PiModelTestResult = {
+  ok: boolean;
+  provider: string;
+  modelId: string;
+  latencyMs: number;
+  reply?: string;
+  error?: string;
+};
+
 type StoredModelsFile = {
   providers?: Record<string, StoredCustomProviderConfig>;
   [key: string]: unknown;
@@ -716,6 +725,88 @@ export class PiAuthService {
     }
     this.refreshByProvider.delete(providerId);
     return this.getSnapshot();
+  }
+
+  async testModel(params: { providerId: string; modelId?: string }): Promise<PiModelTestResult> {
+    const startedAt = Date.now();
+    const providerId = params.providerId.trim();
+    const requestedModelId = params.modelId?.trim() || "";
+    const runtime = await this.modelRuntime;
+    const available = await runtime.getAvailable(providerId);
+
+    const model = requestedModelId
+      ? available.find((candidate) => candidate.id === requestedModelId) ?? runtime.getModel(providerId, requestedModelId)
+      : available[0];
+
+    if (!model) {
+      return {
+        ok: false,
+        provider: providerId,
+        modelId: requestedModelId,
+        latencyMs: Date.now() - startedAt,
+        error: requestedModelId
+          ? `Model "${providerId}/${requestedModelId}" is not available.`
+          : `No authenticated models are available for provider "${providerId}".`,
+      };
+    }
+
+    if (!runtime.hasConfiguredAuth(providerId)) {
+      return {
+        ok: false,
+        provider: providerId,
+        modelId: model.id,
+        latencyMs: Date.now() - startedAt,
+        error: `Provider "${providerId}" is not authenticated.`,
+      };
+    }
+
+    try {
+      const response = await runtime.completeSimple(
+        model,
+        {
+          systemPrompt: "You are running a connectivity check. Reply with OK.",
+          messages: [{ role: "user", content: "Reply with OK.", timestamp: Date.now() }],
+        },
+        {
+          signal: AbortSignal.timeout(25_000),
+          ...(model.reasoning ? {} : { maxTokens: Math.min(model.maxTokens || 256, 256) }),
+        },
+      );
+      const latencyMs = Date.now() - startedAt;
+      if (response.stopReason === "error" || response.stopReason === "aborted") {
+        const message = response.errorMessage?.trim()
+          || (response.stopReason === "aborted" ? "Test request timed out or was aborted." : "Provider returned an error without details.");
+        return { ok: false, provider: model.provider, modelId: model.id, latencyMs, error: message };
+      }
+      const reply = response.content
+        .flatMap((block) => (block.type === "text" ? [block.text] : []))
+        .join("")
+        .trim();
+      if (!reply) {
+        return {
+          ok: false,
+          provider: model.provider,
+          modelId: model.id,
+          latencyMs,
+          error: "Provider completed without returning any text.",
+        };
+      }
+      return {
+        ok: true,
+        provider: model.provider,
+        modelId: model.id,
+        latencyMs,
+        reply: reply.length > 160 ? `${reply.slice(0, 157)}...` : reply,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        provider: model.provider,
+        modelId: model.id,
+        latencyMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   private abortActiveLogin(): void {

@@ -59,6 +59,7 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     saveCustomProvider: async () => piSnapshot,
     deleteCustomProvider: async () => piSnapshot,
     discoverCustomProviderModels: async () => [{ id: "llama3.3", name: "llama3.3" }],
+    testModel: async ({ providerId, modelId }: { providerId: string; modelId?: string }) => ({ ok: true, provider: providerId, modelId: modelId ?? "gpt-5.6-sol", latencyMs: 42, reply: "OK" }),
   };
   const repairService = {
     receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
@@ -139,6 +140,10 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal((await inject({ method: "PUT", url: "/api/pi-auth/custom", payload: { id: "local-ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", api: "openai-completions", requiresApiKey: false, models: [{ id: "llama3.3" }] } })).statusCode, 200);
   assert.equal((await inject({ method: "DELETE", url: "/api/pi-auth/custom/local-ollama" })).statusCode, 200);
   assert.equal((await inject({ method: "POST", url: "/api/pi-auth/custom/discover", payload: { baseUrl: "http://127.0.0.1:11434/v1" } })).statusCode, 200);
+  const testRes = await inject({ method: "POST", url: "/api/pi-auth/test", payload: { providerId: "openai-codex", modelId: "gpt-5.6-sol" } });
+  assert.equal(testRes.statusCode, 200);
+  assert.equal(testRes.json().result.ok, true);
+  assert.equal(testRes.json().result.reply, "OK");
   assert.equal(settings.getJson<{ serviceTier?: string }>("ai", {}).serviceTier, "priority");
   assert.equal(settings.getString("discord.token"), undefined);
   assert.equal(restartCount, 2);

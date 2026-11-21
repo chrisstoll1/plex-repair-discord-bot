@@ -136,6 +136,11 @@ const customProviderDiscoverSchema = z.object({
   providerId: nonEmptyTrimmedString.max(48).optional(),
 }).strict();
 
+const piModelTestSchema = z.object({
+  providerId: nonEmptyTrimmedString.max(120),
+  modelId: z.string().trim().max(256).optional(),
+}).strict();
+
 type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
 type SecretUpdate = z.infer<typeof secretUpdateSchema>;
 type ServiceStatus = {
@@ -396,6 +401,11 @@ export async function createWebServer(
     const body = parseOrReply(customProviderDiscoverSchema, request.body, reply);
     if (!body) return;
     return { models: await piAuth.discoverCustomProviderModels(body) };
+  });
+  app.post("/api/pi-auth/test", async (request, reply) => {
+    const body = parseOrReply(piModelTestSchema, request.body, reply);
+    if (!body) return;
+    return { result: await piAuth.testModel(body) };
   });
 
   app.get("/*", async (request, reply) => {

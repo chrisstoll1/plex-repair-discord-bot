@@ -1,9 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, FlaskConical, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
-import { api, type AiFallbackTarget, type AiModel, type Settings } from "../lib/api";
+import { api, type AiFallbackTarget, type AiModel, type PiModelTestResult, type Settings } from "../lib/api";
 import { settingsSchema } from "../lib/schemas";
 import { ErrorState, LoadingState } from "./states";
 import { useToast } from "./toast";
@@ -89,6 +89,9 @@ function TimeoutFields({ form }: { form: FormParts }) {
 }
 
 function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
+  const toast = useToast();
+  const [testResults, setTestResults] = useState<Record<string, PiModelTestResult>>({});
+  const [testingKey, setTestingKey] = useState<string | null>(null);
   const provider = form.watch("ai.modelProvider");
   const modelId = form.watch("ai.modelId");
   const fallbacks = form.watch("ai.fallbacks") ?? [];
@@ -98,6 +101,31 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
   const modelAvailable = providerModels.some((model) => model.id === modelId);
   const providerField = form.register("ai.modelProvider");
   const hasCodexInHierarchy = provider === "openai-codex" || fallbacks.some((item) => item.modelProvider === "openai-codex");
+
+  const runModelTest = useMutation({
+    mutationFn: (params: { key: string; providerId: string; modelId?: string }) =>
+      api.testPiModel({ providerId: params.providerId, modelId: params.modelId }),
+    onMutate: ({ key }) => setTestingKey(key),
+    onSuccess: (result, { key }) => {
+      setTestResults((current) => ({ ...current, [key]: result }));
+      toast({
+        tone: result.ok ? "success" : "error",
+        title: result.ok ? `${result.provider}/${result.modelId} responded (${result.latencyMs}ms)` : `${result.provider}/${result.modelId || "model"} test failed`,
+        description: result.ok ? result.reply : result.error,
+      });
+    },
+    onError: (err, { key, providerId, modelId: targetModelId }) => {
+      setTestResults((current) => ({
+        ...current,
+        [key]: { ok: false, provider: providerId, modelId: targetModelId ?? "", latencyMs: 0, error: err.message },
+      }));
+      toast({ tone: "error", title: "Model test failed", description: err.message });
+    },
+    onSettled: () => setTestingKey(null),
+  });
+
+  const primaryTestKey = `${provider}\0${modelId}`;
+  const primaryTestResult = testResults[primaryTestKey];
 
   const updateFallbacks = (next: AiFallbackTarget[]) => {
     form.setValue("ai.fallbacks", next, { shouldDirty: true, shouldValidate: true });
@@ -152,11 +180,24 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           <Badge tone="good">#1 Primary</Badge>
           <span className="text-xs text-zinc-400">Used first for every request</span>
         </div>
-        {fallbacks.length > 0 && (
-          <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
-            <ArrowDown className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!provider || testingKey === primaryTestKey}
+            onClick={() => runModelTest.mutate({ key: primaryTestKey, providerId: provider, modelId: modelId || undefined })}
+            aria-label="Test primary model"
+          >
+            {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+            Test
           </Button>
-        )}
+          {fallbacks.length > 0 && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
+              <ArrowDown className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
@@ -178,6 +219,13 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           {form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}
         </div>
       </div>
+      {primaryTestResult && (
+        <p className={`text-xs ${primaryTestResult.ok ? "text-signal" : "text-red-400"}`}>
+          {primaryTestResult.ok
+            ? `Test passed (${primaryTestResult.latencyMs}ms): ${primaryTestResult.reply}`
+            : `Test failed: ${primaryTestResult.error}`}
+        </p>
+      )}
     </div>
 
     {fallbacks.map((fallback, index) => {
@@ -185,11 +233,24 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
       const fbProviderAvailable = providers.includes(fallback.modelProvider);
       const fbModelAvailable = fbModels.some((model) => model.id === fallback.modelId);
       const fbErrors = Array.isArray(form.errors.ai?.fallbacks) ? form.errors.ai.fallbacks[index] : undefined;
+      const fbTestKey = `${fallback.modelProvider}\0${fallback.modelId}`;
+      const fbTestResult = testResults[fbTestKey];
       return (
         <div key={index} className="space-y-3 rounded-lg border border-line bg-ink/30 p-3.5">
           <div className="flex items-center justify-between gap-2">
             <Badge tone="neutral">#{index + 2} Fallback</Badge>
             <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={!fallback.modelProvider || testingKey === fbTestKey}
+                onClick={() => runModelTest.mutate({ key: fbTestKey, providerId: fallback.modelProvider, modelId: fallback.modelId || undefined })}
+                aria-label={`Test fallback ${index + 1} model`}
+              >
+                {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+                Test
+              </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => moveFallback(index, -1)} aria-label={`Move fallback ${index + 1} up`}>
                 <ArrowUp className="h-3.5 w-3.5" />
               </Button>
@@ -236,6 +297,13 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
               {fbErrors?.modelId && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelId.message}</p>}
             </div>
           </div>
+          {fbTestResult && (
+            <p className={`text-xs ${fbTestResult.ok ? "text-signal" : "text-red-400"}`}>
+              {fbTestResult.ok
+                ? `Test passed (${fbTestResult.latencyMs}ms): ${fbTestResult.reply}`
+                : `Test failed: ${fbTestResult.error}`}
+            </p>
+          )}
         </div>
       );
     })}

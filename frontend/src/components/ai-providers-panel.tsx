@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FlaskConical,
   KeyRound,
   LoaderCircle,
   LogOut,
@@ -26,6 +27,7 @@ import {
   type CustomProviderApi,
   type CustomProviderInput,
   type PiAuthSnapshot,
+  type PiModelTestResult,
 } from "../lib/api";
 import { cn, formatDate } from "../lib/utils";
 
@@ -101,6 +103,8 @@ export function PiAuthPanel() {
   const [showCustomKey, setShowCustomKey] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<AiProviderAuthSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AiProviderAuthSummary | null>(null);
+  const [providerTests, setProviderTests] = useState<Record<string, PiModelTestResult>>({});
+  const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const prevPendingRef = useRef(false);
 
   const auth = useQuery({
@@ -224,6 +228,27 @@ export function PiAuthPanel() {
       toast({ tone: "success", title: `Found ${models.length} model${models.length === 1 ? "" : "s"}` });
     },
     onError: (error) => toast({ tone: "error", title: "Model discovery failed", description: error.message }),
+  });
+
+  const testProvider = useMutation({
+    mutationFn: (providerId: string) => api.testPiModel({ providerId }),
+    onMutate: (providerId) => setTestingProviderId(providerId),
+    onSuccess: (result, providerId) => {
+      setProviderTests((current) => ({ ...current, [providerId]: result }));
+      toast({
+        tone: result.ok ? "success" : "error",
+        title: result.ok ? `${providerId} responded (${result.latencyMs}ms)` : `${providerId} test failed`,
+        description: result.ok ? `${result.modelId}: ${result.reply}` : result.error,
+      });
+    },
+    onError: (error, providerId) => {
+      setProviderTests((current) => ({
+        ...current,
+        [providerId]: { ok: false, provider: providerId, modelId: "", latencyMs: 0, error: error.message },
+      }));
+      toast({ tone: "error", title: `${providerId} test failed`, description: error.message });
+    },
+    onSettled: () => setTestingProviderId(null),
   });
 
   if (auth.isPending) return <Card><LoadingState label="Checking AI providers" /></Card>;
@@ -458,10 +483,26 @@ export function PiAuthPanel() {
                         {provider.refresh?.error && (
                           <p className="mt-1 text-[11px] text-red-400">{provider.refresh.error}</p>
                         )}
+                        {providerTests[provider.id] && (
+                          <p className={cn("mt-1.5 text-[11px]", providerTests[provider.id]!.ok ? "text-signal" : "text-red-400")}>
+                            {providerTests[provider.id]!.ok
+                              ? `Test passed (${providerTests[provider.id]!.modelId}, ${providerTests[provider.id]!.latencyMs}ms): ${providerTests[provider.id]!.reply}`
+                              : `Test failed: ${providerTests[provider.id]!.error}`}
+                          </p>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line/60 pt-3">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={testingProviderId === provider.id}
+                        onClick={() => testProvider.mutate(provider.id)}
+                      >
+                        {testingProviderId === provider.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+                        Test
+                      </Button>
                       {provider.kind === "custom" ? (
                         <>
                           <Button variant="secondary" size="sm" onClick={() => beginEditCustom(provider)}>

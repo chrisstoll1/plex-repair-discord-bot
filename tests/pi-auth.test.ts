@@ -174,3 +174,48 @@ test("recovers cleanly when OAuth login commits credentials but local sync throw
   assert.equal(codex?.refresh, undefined);
   assert.ok(createCalls >= 2);
 });
+
+test("testModel sends a probe through ModelRuntime and reports success or provider errors", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "repairman-model-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const authPath = path.join(root, "auth.json");
+  fs.writeFileSync(authPath, JSON.stringify({
+    openai: { type: "api_key", key: "sk-synthetic" },
+  }));
+  const runtime = await ModelRuntime.create({ authPath, modelsPath: null });
+  t.mock.method(ModelRuntime, "create", async () => runtime);
+
+  let mode: "ok" | "error" = "ok";
+  t.mock.method(runtime, "completeSimple", async (model: { provider: string; id: string }) => {
+    if (mode === "error") {
+      return {
+        role: "assistant",
+        provider: model.provider,
+        model: model.id,
+        content: [],
+        stopReason: "error",
+        errorMessage: "401 Invalid API key",
+        timestamp: Date.now(),
+      };
+    }
+    return {
+      role: "assistant",
+      provider: model.provider,
+      model: model.id,
+      content: [{ type: "text", text: "OK" }],
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+  });
+
+  const service = new PiAuthService({ piAgentDir: root } as AppConfig);
+  const ok = await service.testModel({ providerId: "openai" });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.provider, "openai");
+  assert.equal(ok.reply, "OK");
+
+  mode = "error";
+  const failed = await service.testModel({ providerId: "openai", modelId: ok.modelId });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.error, "401 Invalid API key");
+});

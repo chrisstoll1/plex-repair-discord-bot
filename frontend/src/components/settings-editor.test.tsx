@@ -123,4 +123,27 @@ describe("SettingsEditor", () => {
     expect(save.mock.calls[0]?.[0].ai.modelId).toBe("claude-fable-5");
     expect(save.mock.calls[0]?.[0].ai.fallbacks).toEqual([{ modelProvider: "openai-codex", modelId: "gpt-5.1-codex" }]);
   });
+
+  it("tests the primary model inline from the hierarchy editor", async () => {
+    vi.spyOn(api, "getSettings").mockResolvedValue(settings);
+    vi.spyOn(api, "getAiModels").mockResolvedValue([
+      { provider: "openai-codex", id: "gpt-5.1-codex", name: "GPT-5.1 Codex", reasoning: true, contextWindow: 200_000 },
+    ]);
+    const testModel = vi.spyOn(api, "testPiModel").mockResolvedValue({
+      ok: true,
+      provider: "openai-codex",
+      modelId: "gpt-5.1-codex",
+      latencyMs: 95,
+      reply: "OK",
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter([{ path: "/settings/ai", element: <SettingsEditor mode="ai" /> }], { initialEntries: ["/settings/ai"] });
+
+    render(<QueryClientProvider client={queryClient}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("combobox", { name: "Model provider" })).toHaveValue("openai-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Test primary model" }));
+    await waitFor(() => expect(testModel).toHaveBeenCalledWith({ providerId: "openai-codex", modelId: "gpt-5.1-codex" }));
+    expect(await screen.findByText(/Test passed \(95ms\): OK/)).toBeInTheDocument();
+  });
 });
