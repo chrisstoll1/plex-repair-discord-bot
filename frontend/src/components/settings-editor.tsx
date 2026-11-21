@@ -43,7 +43,7 @@ function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { 
   return <form onSubmit={submit} noValidate className="space-y-5">
     {mode === "connections" && <ConnectionsFields form={{ register, control, setValue, watch, errors }} />}
     {mode === "discord" && <DiscordFields form={{ register, control, setValue, watch, errors }} />}
-    {mode === "ai" && <div className="grid gap-5 xl:grid-cols-2"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
+    {mode === "ai" && <div className="space-y-5"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
     {mode === "repair" && <RepairFields form={{ register, control, setValue, watch, errors }} />}
     <SettingsSaveBar dirty={isDirty} saving={isSubmitting || mutation.isPending} onReset={() => reset(settings)} />
   </form>;
@@ -85,7 +85,7 @@ function RepairFields({ form }: { form: FormParts }) {
 }
 
 function TimeoutFields({ form }: { form: FormParts }) {
-  return <Section title="Request timeouts" description="How long to wait for standard operations and release searches."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={form.register} error={form.errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={form.register} error={form.errors.timeouts?.releaseLookupSeconds} type="number" /></Section>;
+  return <Section title="Request timeouts" description="How long to wait for standard operations and release searches."><div className="grid gap-4 sm:grid-cols-2"><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={form.register} error={form.errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={form.register} error={form.errors.timeouts?.releaseLookupSeconds} type="number" /></div></Section>;
 }
 
 function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
@@ -304,8 +304,10 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
       {!pending && !error && models.length === 0 && <p className="text-xs text-amber-300">Connect an AI provider above before selecting a model.</p>}
     </div>
 
-    <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
-    <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">{hasCodexInHierarchy ? "Priority requests faster processing when OpenAI Codex is used." : "Applies only when OpenAI Codex is in your model hierarchy."}</p></div>
+    <div className="grid gap-4 sm:grid-cols-2">
+      <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
+      <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">{hasCodexInHierarchy ? "Priority requests faster processing when OpenAI Codex is used." : "Applies only when OpenAI Codex is in your model hierarchy."}</p></div>
+    </div>
   </Section>;
 }
 
