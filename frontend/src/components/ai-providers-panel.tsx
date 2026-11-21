@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   Check,
+  CheckCircle2,
   Clipboard,
   ExternalLink,
   Eye,
   EyeOff,
-  FlaskConical,
   KeyRound,
   LoaderCircle,
   LogOut,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Server,
@@ -484,11 +486,25 @@ export function PiAuthPanel() {
                           <p className="mt-1 text-[11px] text-red-400">{provider.refresh.error}</p>
                         )}
                         {providerTests[provider.id] && (
-                          <p className={cn("mt-1.5 text-[11px]", providerTests[provider.id]!.ok ? "text-signal" : "text-red-400")}>
-                            {providerTests[provider.id]!.ok
-                              ? `Test passed (${providerTests[provider.id]!.modelId}, ${providerTests[provider.id]!.latencyMs}ms): ${providerTests[provider.id]!.reply}`
-                              : `Test failed: ${providerTests[provider.id]!.error}`}
-                          </p>
+                          <div
+                            className={cn(
+                              "mt-2 flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-[11px] leading-4",
+                              providerTests[provider.id]!.ok
+                                ? "border-signal/25 bg-signal/[.06] text-signal"
+                                : "border-red-500/25 bg-red-500/[.06] text-red-300",
+                            )}
+                          >
+                            {providerTests[provider.id]!.ok ? (
+                              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
+                            ) : (
+                              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                            )}
+                            <span className="break-words">
+                              {providerTests[provider.id]!.ok
+                                ? `Test passed (${providerTests[provider.id]!.modelId}, ${providerTests[provider.id]!.latencyMs}ms): ${providerTests[provider.id]!.reply}`
+                                : `Test failed: ${providerTests[provider.id]!.error}`}
+                            </span>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -500,7 +516,7 @@ export function PiAuthPanel() {
                         disabled={testingProviderId === provider.id}
                         onClick={() => testProvider.mutate(provider.id)}
                       >
-                        {testingProviderId === provider.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+                        {testingProviderId === provider.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
                         Test
                       </Button>
                       {provider.kind === "custom" ? (

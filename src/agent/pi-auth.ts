@@ -774,9 +774,9 @@ export class PiAuthService {
       );
       const latencyMs = Date.now() - startedAt;
       if (response.stopReason === "error" || response.stopReason === "aborted") {
-        const message = response.errorMessage?.trim()
+        const rawMessage = response.errorMessage?.trim()
           || (response.stopReason === "aborted" ? "Test request timed out or was aborted." : "Provider returned an error without details.");
-        return { ok: false, provider: model.provider, modelId: model.id, latencyMs, error: message };
+        return { ok: false, provider: model.provider, modelId: model.id, latencyMs, error: formatProviderErrorMessage(rawMessage) };
       }
       const reply = response.content
         .flatMap((block) => (block.type === "text" ? [block.text] : []))
@@ -804,7 +804,7 @@ export class PiAuthService {
         provider: model.provider,
         modelId: model.id,
         latencyMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
+        error: formatProviderErrorMessage(error instanceof Error ? error.message : String(error)),
       };
     }
   }
@@ -1083,6 +1083,33 @@ function canReadWritePath(filePath: string, parentDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+function formatProviderErrorMessage(raw: string): string {
+  let current = raw.trim();
+  let codePrefix = "";
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current.startsWith("{")) break;
+    try {
+      const parsed = JSON.parse(current) as Record<string, unknown>;
+      const nested = parsed.error && typeof parsed.error === "object" && !Array.isArray(parsed.error)
+        ? (parsed.error as Record<string, unknown>)
+        : parsed;
+      if (!codePrefix) {
+        const code = typeof nested.code === "number" || typeof nested.code === "string" ? String(nested.code) : "";
+        const status = typeof nested.status === "string" ? nested.status : "";
+        codePrefix = [code, status].filter(Boolean).join(" ");
+      }
+      if (typeof nested.message === "string" && nested.message.trim()) {
+        current = nested.message.trim();
+        continue;
+      }
+      break;
+    } catch {
+      break;
+    }
+  }
+  return codePrefix && !current.startsWith(codePrefix) ? `${codePrefix}: ${current}` : current;
 }
 
 function normalizeCustomApi(value: string | undefined): CustomProviderApi {

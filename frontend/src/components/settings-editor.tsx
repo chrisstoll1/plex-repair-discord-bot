@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Eye, EyeOff, FlaskConical, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Eye, EyeOff, LoaderCircle, Play, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
 import { api, type AiFallbackTarget, type AiModel, type PiModelTestResult, type Settings } from "../lib/api";
@@ -180,26 +180,13 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           <Badge tone="good">#1 Primary</Badge>
           <span className="text-xs text-zinc-400">Used first for every request</span>
         </div>
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={!provider || testingKey === primaryTestKey}
-            onClick={() => runModelTest.mutate({ key: primaryTestKey, providerId: provider, modelId: modelId || undefined })}
-            aria-label="Test primary model"
-          >
-            {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-            Test
+        {fallbacks.length > 0 && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
+            <ArrowDown className="h-3.5 w-3.5" />
           </Button>
-          {fallbacks.length > 0 && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
-              <ArrowDown className="h-3.5 w-3.5" />
-            </Button>
-          )}
-        </div>
+        )}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <div>
           <Label htmlFor="model-provider">Model provider</Label>
           <select id="model-provider" {...providerField} value={provider} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">
@@ -218,14 +205,19 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           </select>
           {form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}
         </div>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!provider || testingKey === primaryTestKey}
+          onClick={() => runModelTest.mutate({ key: primaryTestKey, providerId: provider, modelId: modelId || undefined })}
+          aria-label="Test primary model"
+          className="h-10 shrink-0 px-3.5"
+        >
+          {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          Test
+        </Button>
       </div>
-      {primaryTestResult && (
-        <p className={`text-xs ${primaryTestResult.ok ? "text-signal" : "text-red-400"}`}>
-          {primaryTestResult.ok
-            ? `Test passed (${primaryTestResult.latencyMs}ms): ${primaryTestResult.reply}`
-            : `Test failed: ${primaryTestResult.error}`}
-        </p>
-      )}
+      {primaryTestResult && <ModelTestNotice result={primaryTestResult} />}
     </div>
 
     {fallbacks.map((fallback, index) => {
@@ -240,17 +232,6 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
           <div className="flex items-center justify-between gap-2">
             <Badge tone="neutral">#{index + 2} Fallback</Badge>
             <div className="flex items-center gap-1">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={!fallback.modelProvider || testingKey === fbTestKey}
-                onClick={() => runModelTest.mutate({ key: fbTestKey, providerId: fallback.modelProvider, modelId: fallback.modelId || undefined })}
-                aria-label={`Test fallback ${index + 1} model`}
-              >
-                {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-                Test
-              </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => moveFallback(index, -1)} aria-label={`Move fallback ${index + 1} up`}>
                 <ArrowUp className="h-3.5 w-3.5" />
               </Button>
@@ -262,7 +243,7 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
               </Button>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
             <div>
               <Label htmlFor={`fallback-provider-${index}`}>Fallback {index + 1} provider</Label>
               <select
@@ -296,14 +277,19 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
               </select>
               {fbErrors?.modelId && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelId.message}</p>}
             </div>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!fallback.modelProvider || testingKey === fbTestKey}
+              onClick={() => runModelTest.mutate({ key: fbTestKey, providerId: fallback.modelProvider, modelId: fallback.modelId || undefined })}
+              aria-label={`Test fallback ${index + 1} model`}
+              className="h-10 shrink-0 px-3.5"
+            >
+              {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              Test
+            </Button>
           </div>
-          {fbTestResult && (
-            <p className={`text-xs ${fbTestResult.ok ? "text-signal" : "text-red-400"}`}>
-              {fbTestResult.ok
-                ? `Test passed (${fbTestResult.latencyMs}ms): ${fbTestResult.reply}`
-                : `Test failed: ${fbTestResult.error}`}
-            </p>
-          )}
+          {fbTestResult && <ModelTestNotice result={fbTestResult} />}
         </div>
       );
     })}
@@ -321,6 +307,17 @@ function AiModelFields({ form, models, pending, error }: { form: FormParts; mode
     <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
     <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">{hasCodexInHierarchy ? "Priority requests faster processing when OpenAI Codex is used." : "Applies only when OpenAI Codex is in your model hierarchy."}</p></div>
   </Section>;
+}
+
+function ModelTestNotice({ result }: { result: PiModelTestResult }) {
+  return (
+    <div className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-5 ${result.ok ? "border-signal/25 bg-signal/[.06] text-signal" : "border-red-500/25 bg-red-500/[.06] text-red-300"}`}>
+      {result.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+      <span className="break-words">
+        {result.ok ? `Test passed (${result.latencyMs}ms): ${result.reply}` : `Test failed: ${result.error}`}
+      </span>
+    </div>
+  );
 }
 
 function Section({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <Card><CardHeader><CardTitle>{title}</CardTitle><p className="mt-1 text-xs text-zinc-500">{description}</p></CardHeader><CardContent className="space-y-5">{children}</CardContent></Card>; }
