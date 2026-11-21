@@ -9,19 +9,6 @@ updates:
       time: "09:00"
       timezone: "America/New_York"
     versioning-strategy: "increase"
-    open-pull-requests-limit: 5
-    # Unknown SDK source layouts fail installation; streaming regression tests
-    # and the required build check gate automatic merging.
-  - package-ecosystem: "npm"
-    directory: "/frontend"
-    target-branch: "master"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "America/New_York"
-    groups:
-      frontend-patch-and-minor:
-        patterns: ["*"]
-        update-types: ["patch", "minor"]
-    open-pull-requests-limit: 3
+    allow:
+      - dependency-name: "@earendil-works/pi-coding-agent"
+    open-pull-requests-limit: 1
