@@ -929,6 +929,7 @@ export class PiAuthService {
     try {
       await runtime.refresh({
         providers: [providerId],
+        allowNetwork: true,
         signal: AbortSignal.timeout(5_000),
       });
     } catch {
@@ -937,36 +938,56 @@ export class PiAuthService {
   }
 }
 
-export function createPiModelRuntimeOptions(piAgentDir: string): CreateModelRuntimeOptions {
+const sharedMemoryModelStores = new Map<string, NonNullable<CreateModelRuntimeOptions["modelsStore"]>>();
+
+export function createPiModelRuntimeOptions(
+  piAgentDir: string,
+  options: { allowModelNetwork?: boolean; modelRefreshTimeoutMs?: number } = {},
+): CreateModelRuntimeOptions {
   const authPath = path.join(piAgentDir, "auth.json");
   const modelsPath = path.join(piAgentDir, "models.json");
-  const modelsStorePath = path.join(piAgentDir, "models-store.json");
-  if (canReadWriteIfPresent(modelsStorePath)) {
-    return { authPath, modelsPath };
+  const defaultStorePath = path.join(piAgentDir, "models-store.json");
+  const fallbackStorePath = path.join(piAgentDir, "models-catalog.json");
+  const allowModelNetwork = options.allowModelNetwork ?? true;
+  const modelRefreshTimeoutMs = options.modelRefreshTimeoutMs ?? 5_000;
+
+  if (canReadWritePath(defaultStorePath, piAgentDir)) {
+    return { authPath, modelsPath, modelsStorePath: defaultStorePath, allowModelNetwork, modelRefreshTimeoutMs };
   }
-  const entries = new Map<string, unknown>();
-  const modelsStore: NonNullable<CreateModelRuntimeOptions["modelsStore"]> = {
-    async read(providerId, options) {
-      options?.signal?.throwIfAborted();
-      const entry = entries.get(providerId);
-      return entry ? structuredClone(entry) as Awaited<ReturnType<NonNullable<CreateModelRuntimeOptions["modelsStore"]>["read"]>> : undefined;
-    },
-    async write(providerId, entry, options) {
-      options?.signal?.throwIfAborted();
-      entries.set(providerId, structuredClone(entry));
-    },
-    async delete(providerId, options) {
-      options?.signal?.throwIfAborted();
-      entries.delete(providerId);
-    },
-  };
-  return { authPath, modelsPath, modelsStore };
+  if (canReadWritePath(fallbackStorePath, piAgentDir)) {
+    return { authPath, modelsPath, modelsStorePath: fallbackStorePath, allowModelNetwork, modelRefreshTimeoutMs };
+  }
+
+  let modelsStore = sharedMemoryModelStores.get(piAgentDir);
+  if (!modelsStore) {
+    const entries = new Map<string, unknown>();
+    modelsStore = {
+      async read(providerId, readOptions) {
+        readOptions?.signal?.throwIfAborted();
+        const entry = entries.get(providerId);
+        return entry ? structuredClone(entry) as Awaited<ReturnType<NonNullable<CreateModelRuntimeOptions["modelsStore"]>["read"]>> : undefined;
+      },
+      async write(providerId, entry, writeOptions) {
+        writeOptions?.signal?.throwIfAborted();
+        entries.set(providerId, structuredClone(entry));
+      },
+      async delete(providerId, deleteOptions) {
+        deleteOptions?.signal?.throwIfAborted();
+        entries.delete(providerId);
+      },
+    };
+    sharedMemoryModelStores.set(piAgentDir, modelsStore);
+  }
+  return { authPath, modelsPath, modelsStore, allowModelNetwork, modelRefreshTimeoutMs };
 }
 
-function canReadWriteIfPresent(filePath: string): boolean {
+function canReadWritePath(filePath: string, parentDir: string): boolean {
   try {
-    if (!fs.existsSync(filePath)) return true;
-    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    if (fs.existsSync(filePath)) {
+      fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+      return true;
+    }
+    fs.accessSync(parentDir, fs.constants.R_OK | fs.constants.W_OK);
     return true;
   } catch {
     return false;
