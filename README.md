@@ -6,6 +6,8 @@
 
 Plex Repairman is a self-hosted Discord bot and web portal for diagnosing and repairing Plex, Sonarr, Radarr, and Seerr media issues. Mention it in Discord, describe what is wrong, and it inspects your media services, explains what it found, and runs repairs allowed by your policy settings.
 
+Full setup, AI provider, repair policy, operations, and troubleshooting guides live in the **[Wiki](https://github.com/chrisstoll1/plex-repair-discord-bot/wiki)** (also see [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md)).
+
 - **Multi-provider AI with fallbacks:** Connect OAuth subscriptions, API keys, or custom OpenAI/Anthropic-compatible endpoints with an ordered primary/fallback model hierarchy and inline connectivity tests.
 - **Safe by default:** Destructive repairs and direct Sonarr/Radarr additions are off by default, write actions can require per-action Discord confirmation, and repair permissions can be scoped by Discord role.
 - **Durable repair threads:** Each issue gets a dedicated public Discord thread that persists across restarts and resumes automatically from Sonarr/Radarr webhooks or scheduled checks.
@@ -79,7 +81,7 @@ The container runs as non-root (`1000:1000` by default; `568:568` in the TrueNAS
 4. Open **Settings → AI** to connect one or more AI providers (OAuth, API key, or custom endpoint), choose your primary and fallback models, and click **Test** to verify connectivity.
 5. Review **Settings → Repair policy** (confirmations, destructive actions, direct additions), then check **Overview** to confirm every service is healthy.
 
-See [Setup Guide](docs/setup.md) and [AI Providers & Models](docs/ai-providers.md) for full details.
+See the [Setup Guide](https://github.com/chrisstoll1/plex-repair-discord-bot/wiki/Setup) and [AI Providers & Models](https://github.com/chrisstoll1/plex-repair-discord-bot/wiki/AI-Providers) in the Wiki for full details.
 
 ## Example Requests
 
@@ -101,26 +103,11 @@ Mention the bot in an allowed Discord channel to start a repair thread:
 @Plex Repairman refresh my Plex TV library
 ```
 
-## Documentation
-
-Browse the guides in `docs/` (also mirrored to the [GitHub Wiki](https://github.com/chrisstoll1/plex-repair-discord-bot/wiki)):
-
-| Guide | What it covers |
-| --- | --- |
-| [Setup Guide](docs/setup.md) | Discord Developer Portal setup, Plex/Sonarr/Radarr/Seerr connections, Seerr user mappings, and Arr webhooks |
-| [AI Providers & Models](docs/ai-providers.md) | OAuth, API keys, custom endpoints, ordered fallback hierarchy, connectivity testing, thinking level, and timeouts |
-| [Repairs, Safety & Policies](docs/repairs-and-safety.md) | Policy toggles, Plex scanner log diagnostics, Split Apart / Fix Match, manual imports, Seerr requests, and thread lifecycle |
-| [Operations & Troubleshooting](docs/operations.md) | Environment variables, `/config` files, portal sign-in, reverse proxies, backups, upgrades, image tags, password recovery, and troubleshooting |
-| [Development & CI](docs/development.md) | Local Node 24 + Vite workflow, tests, audits, container/catalog validation, and weekly Pi SDK updates |
-| [Security Policy](SECURITY.md) | Security model, session/CSRF protections, and vulnerability reporting |
-| [Changelog](CHANGELOG.md) | Release history and version notes |
-| [TrueNAS Catalog Package](packaging/truenas/README.md) | TrueNAS Community catalog packaging and validation |
-
 ## Upgrading and Backup
 
 Stop the container before backing up or taking a dataset snapshot of `/config`. Always back up and restore the entire `/config` directory together (`plex-repairman.db` plus any WAL/SHM files, `secrets.key`, and `pi/`)—losing `secrets.key` makes encrypted credentials in the database unrecoverable.
 
-See [Operations & Troubleshooting](docs/operations.md#backups-upgrades-and-rollback) for full upgrade, 0.1→0.2 migration, rollback, and offline password-recovery instructions.
+See [Operations & Troubleshooting](https://github.com/chrisstoll1/plex-repair-discord-bot/wiki/Operations#backups-upgrades-and-rollback) in the Wiki for full upgrade, 0.1→0.2 migration, rollback, and offline password-recovery instructions.
 
 ## License
 
