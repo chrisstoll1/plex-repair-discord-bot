@@ -59,7 +59,14 @@ export type RepairCaseControl = {
   plexVerification?: PlexVerificationState;
 };
 
-export type RepairCaseAgentResult = { response: string; control?: RepairCaseControlResult };
+export type AiUsedModel = {
+  provider: string;
+  modelId: string;
+  fallback?: boolean;
+  attempted?: string[];
+};
+
+export type RepairCaseAgentResult = { response: string; control?: RepairCaseControlResult; model?: AiUsedModel };
 
 export type AgentProgressUpdate = {
   type: "tasks_started";
@@ -388,7 +395,7 @@ export class PiAgentService {
       params.resume ? `Resume trigger: ${JSON.stringify(params.resume)}. Continue from the saved checkpoint; do not describe this as starting over.` : undefined,
       `Complete thread transcript:\n${transcript}`,
     ].filter(Boolean).join("\n\n");
-    const response = await this.runAgentSession({
+    const sessionResult = await this.runAgentSessionWithMeta({
       systemPrompt: REPAIR_CASE_INSTRUCTIONS,
       prompt,
       tools: this.createOrchestrationTools(context),
@@ -396,8 +403,8 @@ export class PiAgentService {
       signal: params.signal,
       allowEmptyResponse: true,
     });
-    if (!response && !control) throw new Error("Agent session completed without a response or lifecycle decision");
-    return { response, control };
+    if (!sessionResult.text && !control) throw new Error("Agent session completed without a response or lifecycle decision");
+    return { response: sessionResult.text, control, model: sessionResult.model };
   }
 
   async generateRepairCaseStatus(params: {
@@ -457,6 +464,10 @@ export class PiAgentService {
   }
 
   async runToolAgentTask(task: ToolAgentTask, roles: string[], signal?: AbortSignal, approvedAction?: string): Promise<string> {
+    return (await this.runToolAgentTaskWithResult(task, roles, signal, approvedAction)).text;
+  }
+
+  async runToolAgentTaskWithResult(task: ToolAgentTask, roles: string[], signal?: AbortSignal, approvedAction?: string): Promise<{ text: string; model?: AiUsedModel }> {
     if (!isToolProfile(task.toolProfile)) throw new Error(`Unknown tool profile: ${task.toolProfile}`);
     const settings = readRuntimeSettings(this.store);
     const prompt = [
@@ -469,7 +480,7 @@ export class PiAgentService {
       .join("\n\n");
 
     let confirmationConsumed = false;
-    return this.runAgentSession({
+    return this.runAgentSessionWithMeta({
       systemPrompt: isRepairToolProfile(task.toolProfile) ? REPAIR_AGENT_INSTRUCTIONS : TOOL_AGENT_INSTRUCTIONS,
       prompt,
       tools: this.createTools({
@@ -491,6 +502,10 @@ export class PiAgentService {
   }
 
   private async runAgentSession(params: AgentSessionParams): Promise<string> {
+    return (await this.runAgentSessionWithMeta(params)).text;
+  }
+
+  private async runAgentSessionWithMeta(params: AgentSessionParams): Promise<{ text: string; model?: AiUsedModel }> {
     fs.mkdirSync(this.config.piAgentDir, { recursive: true });
 
     const settings = readRuntimeSettings(this.store);
@@ -499,6 +514,7 @@ export class PiAgentService {
     const candidates = buildAiModelHierarchy(settings.ai);
 
     let attemptExecutedTools = false;
+    const attempted: string[] = [];
     return runWithModelFallback({
       candidates,
       signal: params.signal,
@@ -509,8 +525,10 @@ export class PiAgentService {
           "AI model attempt failed; falling back to next configured provider",
         );
       },
-      runAttempt: async (candidate) => {
+      runAttempt: async (candidate, index) => {
         attemptExecutedTools = false;
+        const candidateLabel = candidate.modelId ? `${candidate.provider}/${candidate.modelId}` : candidate.provider;
+        if (candidateLabel) attempted.push(candidateLabel);
         const model = resolveConfiguredModel(modelRegistry, candidate.provider, candidate.modelId);
         if (model && candidates.length > 1 && !modelRuntime.hasConfiguredAuth(model.provider)) {
           throw new AiAuthenticationError(`Missing API key or authentication for provider "${model.provider}"`);
@@ -570,7 +588,18 @@ export class PiAgentService {
           if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
           await session.prompt(params.prompt);
           if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
-          return { value: readAgentSessionResponse(session, params.allowEmptyResponse) };
+          const text = readAgentSessionResponse(session, params.allowEmptyResponse);
+          const lastAssistant = [...session.messages].reverse().find((message) => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted");
+          const usedProvider = (lastAssistant && "provider" in lastAssistant ? lastAssistant.provider : undefined) || model?.provider || candidate.provider;
+          const usedModelId = (lastAssistant && "model" in lastAssistant ? lastAssistant.model : undefined) || model?.id || candidate.modelId;
+          const usedModel: AiUsedModel | undefined = usedProvider && usedModelId
+            ? {
+                provider: usedProvider,
+                modelId: usedModelId,
+                ...(index > 0 ? { fallback: true, attempted: [...attempted] } : {}),
+              }
+            : undefined;
+          return { value: { text, model: usedModel } };
         } catch (error) {
           const failure = classifyAiRequestError(error);
           if (!params.signal?.aborted) {

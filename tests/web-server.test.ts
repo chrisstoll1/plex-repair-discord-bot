@@ -164,9 +164,9 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.deepEqual((await inject({ method: "GET", url: "/api/pi-models" })).json(), {
     models: [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
   });
-  const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
+  const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it", checkpoint: { summary: "Checked", lastModel: { provider: "anthropic", modelId: "claude-fable-5", fallback: true, attempted: ["openai-codex/gpt-5.6-sol", "anthropic/claude-fable-5"] } } });
   repairs.addMessage(repair.id, { role: "user", content: "The episode is missing", sourceMessageId: "discord-user", metadata: { userId: "user" } });
-  repairs.addActivity(repair.id, "progress", "I am checking it", "agent");
+  repairs.addActivity(repair.id, "progress", { userUpdate: "I am checking it", model: { provider: "anthropic", modelId: "claude-fable-5", fallback: true } }, "agent");
   repairs.addMessage(repair.id, { role: "assistant", content: "I am checking it", sourceMessageId: "discord-bot" });
   repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   const webhookConfig = await inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
@@ -179,10 +179,11 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(repairs.get(repair.id)?.status, "ready");
   const repairList = await inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
+  assert.deepEqual(repairList.json().repairs[0].model, { provider: "anthropic", modelId: "claude-fable-5", fallback: true, attempted: ["openai-codex/gpt-5.6-sol", "anthropic/claude-fable-5"] });
   const timeline = (await inject({ method: "GET", url: `/api/repairs/${repair.id}/timeline` })).json().timeline;
   assert.equal(timeline.some((entry: { type: string; source: string; actor?: string }) => entry.type === "user_message" && entry.source === "user" && entry.actor === "user"), true);
   assert.equal(timeline.filter((entry: { message?: string }) => entry.message === "I am checking it").length, 1);
-  assert.equal(timeline.some((entry: { source: string; actor?: string }) => entry.source === "bot" && entry.actor === "agent"), true);
+  assert.equal(timeline.some((entry: { source: string; actor?: string; model?: { provider: string; modelId: string } }) => entry.source === "bot" && entry.actor === "agent" && entry.model?.provider === "anthropic"), true);
   const clearedRepairs = await inject({ method: "DELETE", url: "/api/repairs" });
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);

@@ -52,6 +52,13 @@ export type TaskPage = { tasks: AgentTask[]; counts: Record<AgentTaskStatus, num
 export type RepairFilter = "all" | "working" | "waiting" | "attention" | "completed";
 export type RepairPage = { repairs: RepairCase[]; counts: Record<RepairCaseStatus, number>; pagination: PageInfo };
 export type TimelinePage = { timeline: RepairCaseActivity[]; pagination: PageInfo };
+export type AiUsedModel = {
+  provider: string;
+  modelId: string;
+  fallback?: boolean;
+  attempted?: string[];
+};
+
 export type AgentTask = {
   id: string;
   parentTaskId?: string;
@@ -67,6 +74,7 @@ export type AgentTask = {
   input?: unknown;
   resultText?: string;
   result?: unknown;
+  model?: AiUsedModel;
   error?: string;
   attempts: number;
   createdAt: string;
@@ -81,6 +89,7 @@ export type RepairCase = {
   status: RepairCaseStatus;
   title: string;
   latestUpdate?: string;
+  model?: AiUsedModel;
   nextWakeAt?: string;
   threadUrl?: string;
   createdAt: string;
@@ -98,6 +107,7 @@ export type RepairCaseActivity = {
   actor?: string;
   message?: string;
   status?: RepairCaseStatus;
+  model?: AiUsedModel;
   details?: unknown;
   createdAt: string;
 };

@@ -418,11 +418,18 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
   const details = latest?.details && typeof latest.details === "object" ? latest.details as { message?: string; userUpdate?: string } : {};
   const latestText = typeof latest?.details === "string" ? latest.details : details.userUpdate ?? details.message;
   const wake = store.getWake(repairCase.id);
+  const checkpointModel = repairCase.checkpoint && typeof repairCase.checkpoint === "object" && "lastModel" in repairCase.checkpoint
+    ? parseUsedModel((repairCase.checkpoint as { lastModel?: unknown }).lastModel)
+    : undefined;
+  const latestActivityModel = [...activity].reverse()
+    .map((entry) => entry.details && typeof entry.details === "object" && "model" in entry.details ? parseUsedModel((entry.details as { model?: unknown }).model) : undefined)
+    .find(Boolean);
   return {
     id: repairCase.id,
     status: repairCase.status,
     title: repairCase.title,
     latestUpdate: latestText,
+    model: checkpointModel ?? latestActivityModel,
     nextWakeAt: wake?.type === "timer" ? String(wake.dueAt) : wake?.fallbackAt ? String(wake.fallbackAt) : undefined,
     threadUrl: repairCase.guildId ? `https://discord.com/channels/${repairCase.guildId}/${repairCase.threadId}` : undefined,
     createdAt: repairCase.createdAt,
@@ -433,8 +440,20 @@ function publicRepairCase(repairCase: RepairCase, store: RepairCaseStore) {
 }
 
 function publicRepairActivity(activity: RepairCaseActivity) {
-  const details = activity.details && typeof activity.details === "object" ? activity.details as { message?: string; userUpdate?: string; to?: RepairCase["status"] } : {};
-  return { id: String(activity.id), repairId: activity.caseId, type: activity.kind, actor: activity.actor, message: typeof activity.details === "string" ? activity.details : details.userUpdate ?? details.message, status: details.to, details: activity.details, createdAt: activity.createdAt };
+  const details = activity.details && typeof activity.details === "object" ? activity.details as { message?: string; userUpdate?: string; to?: RepairCase["status"]; model?: unknown } : {};
+  return { id: String(activity.id), repairId: activity.caseId, type: activity.kind, actor: activity.actor, message: typeof activity.details === "string" ? activity.details : details.userUpdate ?? details.message, status: details.to, model: parseUsedModel(details.model), details: activity.details, createdAt: activity.createdAt };
+}
+
+function parseUsedModel(value: unknown): { provider: string; modelId: string; fallback?: boolean; attempted?: string[] } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { provider?: unknown; modelId?: unknown; fallback?: unknown; attempted?: unknown };
+  if (typeof record.provider !== "string" || !record.provider || typeof record.modelId !== "string" || !record.modelId) return undefined;
+  return {
+    provider: record.provider,
+    modelId: record.modelId,
+    ...(record.fallback === true ? { fallback: true } : {}),
+    ...(Array.isArray(record.attempted) ? { attempted: record.attempted.filter((item): item is string => typeof item === "string") } : {}),
+  };
 }
 
 function activitySource(kind: string): "bot" | "agent" | "system" {

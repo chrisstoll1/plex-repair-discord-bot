@@ -2,6 +2,13 @@ import type { AppDatabase } from "./db.js";
 
 export type ToolAgentTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
+export type ToolAgentModelMeta = {
+  provider: string;
+  modelId: string;
+  fallback?: boolean;
+  attempted?: string[];
+};
+
 export type ToolAgentTask = {
   id: string;
   parentTaskId?: string;
@@ -17,6 +24,7 @@ export type ToolAgentTask = {
   input?: unknown;
   resultText?: string;
   result?: unknown;
+  model?: ToolAgentModelMeta;
   error?: string;
   attempts: number;
   createdAt: string;
@@ -241,6 +249,7 @@ export class ToolAgentTaskStore {
 }
 
 function fromRow(row: ToolAgentTaskRow): ToolAgentTask {
+  const result = parseJson(row.result_json);
   return {
     id: row.id,
     parentTaskId: row.parent_task_id ?? undefined,
@@ -255,13 +264,28 @@ function fromRow(row: ToolAgentTaskRow): ToolAgentTask {
     prompt: row.prompt,
     input: parseJson(row.input_json),
     resultText: row.result_text ?? undefined,
-    result: parseJson(row.result_json),
+    result,
+    model: extractTaskModel(result),
     error: row.error ?? undefined,
     attempts: row.attempts,
     createdAt: row.created_at,
     startedAt: row.started_at ?? undefined,
     finishedAt: row.finished_at ?? undefined,
     updatedAt: row.updated_at,
+  };
+}
+
+function extractTaskModel(result: unknown): ToolAgentModelMeta | undefined {
+  if (!result || typeof result !== "object" || !("model" in result)) return undefined;
+  const candidate = (result as { model?: unknown }).model;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const record = candidate as { provider?: unknown; modelId?: unknown; fallback?: unknown; attempted?: unknown };
+  if (typeof record.provider !== "string" || !record.provider || typeof record.modelId !== "string" || !record.modelId) return undefined;
+  return {
+    provider: record.provider,
+    modelId: record.modelId,
+    ...(record.fallback === true ? { fallback: true } : {}),
+    ...(Array.isArray(record.attempted) ? { attempted: record.attempted.filter((item): item is string => typeof item === "string") } : {}),
   };
 }
 
