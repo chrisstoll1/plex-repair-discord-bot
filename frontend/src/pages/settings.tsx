@@ -24,4 +24,4 @@ export function SettingsLayout() {
 export function DiscordSettingsPage() { return <SettingsEditor mode="discord" />; }
 export function AiSettingsPage() { return <div className="space-y-5"><PiAuthPanel /><SettingsEditor mode="ai" /></div>; }
 export function RepairPolicyPage() { return <SettingsEditor mode="repair" />; }
-export function SecurityPage() { return <div className="max-w-4xl"><PortalAuthSettings /></div>; }
+export function SecurityPage() { return <PortalAuthSettings />; }

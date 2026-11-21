@@ -12,17 +12,49 @@ import { SettingsSaveBar } from "./settings-save-bar";
 
 export type SettingsSection = "connections" | "discord" | "ai" | "repair";
 
-export function SettingsEditor({ mode }: { mode: SettingsSection }) {
+type SettingsEditorProps = {
+  mode: SettingsSection;
+  afterFields?: React.ReactNode;
+  extraDirty?: boolean;
+  extraSaving?: boolean;
+  onExtraSave?: () => Promise<void>;
+  onExtraReset?: () => void;
+};
+
+export function SettingsEditor({ mode, afterFields, extraDirty = false, extraSaving = false, onExtraSave, onExtraReset }: SettingsEditorProps) {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "ai" });
 
   if (settingsQuery.isPending) return <LoadingState label="Loading configuration" />;
   if (settingsQuery.isError) return <ErrorState error={settingsQuery.error} retry={() => settingsQuery.refetch()} />;
 
-  return <SettingsForm key={mode} mode={mode} settings={settingsQuery.data} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />;
+  return <SettingsForm
+    key={mode}
+    mode={mode}
+    settings={settingsQuery.data}
+    models={modelsQuery.data ?? []}
+    modelsPending={modelsQuery.isPending}
+    modelsError={modelsQuery.error}
+    afterFields={afterFields}
+    extraDirty={extraDirty}
+    extraSaving={extraSaving}
+    onExtraSave={onExtraSave}
+    onExtraReset={onExtraReset}
+  />;
 }
 
-function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { mode: SettingsSection; settings: Settings; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
+function SettingsForm({ mode, settings, models, modelsPending, modelsError, afterFields, extraDirty, extraSaving, onExtraSave, onExtraReset }: {
+  mode: SettingsSection;
+  settings: Settings;
+  models: AiModel[];
+  modelsPending: boolean;
+  modelsError: Error | null;
+  afterFields?: React.ReactNode;
+  extraDirty: boolean;
+  extraSaving: boolean;
+  onExtraSave?: () => Promise<void>;
+  onExtraReset?: () => void;
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settings });
@@ -34,18 +66,32 @@ function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { 
       queryClient.setQueryData(["settings"], data);
       queryClient.invalidateQueries({ queryKey: ["status"] });
       reset(data);
-      toast({ tone: "success", title: "Settings saved", description: "Your changes have been applied." });
     },
     onError: (error) => toast({ tone: "error", title: "Save failed", description: error.message }),
   });
 
-  const submit = handleSubmit((values) => mutation.mutateAsync(values));
+  const submit = handleSubmit(async (values) => {
+    const saveSettings = isDirty;
+    const saveExtra = extraDirty && Boolean(onExtraSave);
+    try {
+      if (saveSettings) await mutation.mutateAsync(values);
+      if (saveExtra) await onExtraSave!();
+      if (saveSettings || saveExtra) {
+        toast({ tone: "success", title: "Settings saved", description: "Your changes have been applied." });
+      }
+    } catch {
+      return;
+    }
+  });
+  const dirty = isDirty || extraDirty;
+  const saving = isSubmitting || mutation.isPending || extraSaving;
   return <form onSubmit={submit} noValidate className="space-y-5">
     {mode === "connections" && <ConnectionsFields form={{ register, control, setValue, watch, errors }} />}
     {mode === "discord" && <DiscordFields form={{ register, control, setValue, watch, errors }} />}
     {mode === "ai" && <div className="space-y-5"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
     {mode === "repair" && <RepairFields form={{ register, control, setValue, watch, errors }} />}
-    <SettingsSaveBar dirty={isDirty} saving={isSubmitting || mutation.isPending} onReset={() => reset(settings)} />
+    {afterFields}
+    <SettingsSaveBar dirty={dirty} saving={saving} onReset={() => { reset(settings); onExtraReset?.(); }} />
   </form>;
 }
 
