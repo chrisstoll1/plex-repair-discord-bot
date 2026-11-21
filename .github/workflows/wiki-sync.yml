@@ -1,0 +1,58 @@
+name: Sync Wiki
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - 'scripts/sync-wiki.mjs'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Clone wiki repository
+        id: clone-wiki
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WIKI_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+          if ! git clone "$WIKI_URL" wiki-checkout; then
+            echo "::error::Could not clone the GitHub Wiki repository. Enable Wiki in repository settings and create an initial page at https://github.com/${GITHUB_REPOSITORY}/wiki before running this workflow."
+            exit 1
+          fi
+
+      - name: Generate wiki pages from docs/
+        run: node scripts/sync-wiki.mjs --out wiki-checkout
+
+      - name: Commit and push wiki changes
+        working-directory: wiki-checkout
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Sync wiki from docs/ (${GITHUB_SHA::7})"
+          git push origin HEAD
