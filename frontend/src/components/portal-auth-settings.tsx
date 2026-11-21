@@ -35,21 +35,23 @@ function PortalAuthForm({ settings }: { settings: AuthSettings }) {
     if (password !== confirmation) { setValidationError("The new passwords do not match."); return; }
     mutation.mutate({ enabled, username, ...(password ? { password } : {}), ...(settings.enabled ? { currentPassword } : {}) });
   }
-  return <Card><CardHeader><CardTitle>Administrator sign-in</CardTitle></CardHeader>
-    <CardContent><form onSubmit={submit} className="space-y-5">
-      <div className="flex items-center justify-between gap-4"><div><Label htmlFor="portal-sign-in">Require sign-in</Label><p className="mt-1 max-w-xl text-sm text-zinc-500">When off, anyone with portal access is an administrator.</p></div>
-        <Switch id="portal-sign-in" checked={enabled} onCheckedChange={(value) => { setEnabled(value); setSaved(false); if (!value) { setPassword(""); setConfirmation(""); setUsername(settings.username); } }} aria-label="Require sign-in" />
-      </div>
-      {enabled && <div className="grid max-w-2xl gap-5 sm:grid-cols-2">
-        <div className="space-y-2"><Label htmlFor="portal-username">Username</Label><Input id="portal-username" autoComplete="username" required maxLength={128} value={username} onChange={(event) => { setUsername(event.target.value); setSaved(false); }} /></div>
-        <div className="space-y-2"><Label htmlFor="portal-password">Password</Label><Input id="portal-password" type="password" autoComplete="new-password" required={!settings.passwordConfigured} minLength={8} maxLength={256} value={password} onChange={(event) => { setPassword(event.target.value); setSaved(false); }} placeholder={settings.passwordConfigured ? "Leave blank to keep current password" : "At least 8 characters"} /></div>
-        <div className="space-y-2"><Label htmlFor="portal-confirm-password">Confirm new password</Label><Input id="portal-confirm-password" type="password" autoComplete="new-password" required={password.length > 0} maxLength={256} value={confirmation} onChange={(event) => { setConfirmation(event.target.value); setSaved(false); }} /></div>
-      </div>}
-      {settings.enabled && <div className="max-w-sm space-y-2"><Label htmlFor="portal-current-password">Current password</Label><Input id="portal-current-password" type="password" autoComplete="current-password" required maxLength={256} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>}
-      {saved && <p role="status" className="text-sm text-signal">{enabled ? "Sign-in enabled. You are signed in on this browser." : "Sign-in disabled."}</p>}
-      {validationError && <p role="alert" className="text-sm text-red-300">{validationError}</p>}
-      {mutation.error && <p role="alert" className="text-sm text-red-300">{mutation.error.message}</p>}
-      <SettingsSaveBar dirty={dirty} saving={mutation.isPending} onReset={reset} />
-    </form></CardContent>
-  </Card>;
+  return <form onSubmit={submit} className="space-y-5">
+    <Card><CardHeader><CardTitle>Administrator sign-in</CardTitle></CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex items-center justify-between gap-4"><div><Label htmlFor="portal-sign-in">Require sign-in</Label><p className="mt-1 max-w-xl text-sm text-zinc-500">When off, anyone with portal access is an administrator.</p></div>
+          <Switch id="portal-sign-in" checked={enabled} onCheckedChange={(value) => { setEnabled(value); setSaved(false); if (!value) { setPassword(""); setConfirmation(""); setUsername(settings.username); } }} aria-label="Require sign-in" />
+        </div>
+        {enabled && <div className="grid max-w-2xl gap-5 sm:grid-cols-2">
+          <div className="space-y-2"><Label htmlFor="portal-username">Username</Label><Input id="portal-username" autoComplete="username" required maxLength={128} value={username} onChange={(event) => { setUsername(event.target.value); setSaved(false); }} /></div>
+          <div className="space-y-2"><Label htmlFor="portal-password">Password</Label><Input id="portal-password" type="password" autoComplete="new-password" required={!settings.passwordConfigured} minLength={8} maxLength={256} value={password} onChange={(event) => { setPassword(event.target.value); setSaved(false); }} placeholder={settings.passwordConfigured ? "Leave blank to keep current password" : "At least 8 characters"} /></div>
+          <div className="space-y-2"><Label htmlFor="portal-confirm-password">Confirm new password</Label><Input id="portal-confirm-password" type="password" autoComplete="new-password" required={password.length > 0} maxLength={256} value={confirmation} onChange={(event) => { setConfirmation(event.target.value); setSaved(false); }} /></div>
+        </div>}
+        {settings.enabled && <div className="max-w-sm space-y-2"><Label htmlFor="portal-current-password">Current password</Label><Input id="portal-current-password" type="password" autoComplete="current-password" required maxLength={256} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></div>}
+        {saved && <p role="status" className="text-sm text-signal">{enabled ? "Sign-in enabled. You are signed in on this browser." : "Sign-in disabled."}</p>}
+        {validationError && <p role="alert" className="text-sm text-red-300">{validationError}</p>}
+        {mutation.error && <p role="alert" className="text-sm text-red-300">{mutation.error.message}</p>}
+      </CardContent>
+    </Card>
+    <SettingsSaveBar dirty={dirty} saving={mutation.isPending} onReset={reset} />
+  </form>;
 }

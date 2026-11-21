@@ -30,7 +30,7 @@ const toolAgentTasks = new ToolAgentTaskStore(db);
 const repairCases = new RepairCaseStore(db);
 const piAuth = new PiAuthService(config);
 const agent = new PiAgentService(config, settings, logger);
-const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal, approvedAction) => agent.runToolAgentTask(task, roles, signal, approvedAction), logger);
+const toolAgentQueue = new ToolAgentQueueService(toolAgentTasks, (task, roles, signal, approvedAction) => agent.runToolAgentTaskWithResult(task, roles, signal, approvedAction), logger);
 agent.setToolAgentQueue(toolAgentQueue);
 toolAgentQueue.recover();
 const discord = new DiscordBotService(settings, conversations, logger, repairCases, (request) => agent.generateRepairCaseTitle(request));
@@ -96,10 +96,13 @@ const repairCaseService = new RepairCaseService(repairCases, {
       resume: runContext.resume,
     });
     const control = result.control;
+    const modelFields = result.model ? { lastModel: result.model } : {};
+    const activityModelFields = result.model ? { model: result.model } : {};
     if (!control) {
       return {
         status: "needs_input",
-        checkpoint: { summary: result.response, reason: "No lifecycle decision was recorded" },
+        checkpoint: { summary: result.response, reason: "No lifecycle decision was recorded", ...modelFields },
+        activity: result.model ? { kind: "user_update", details: { userUpdate: result.response, ...activityModelFields } } : undefined,
         deliveries: [{ kind: "discord_message", payload: { content: result.response }, dedupeKey: "final" }],
       };
     }
@@ -111,8 +114,8 @@ const repairCaseService = new RepairCaseService(repairCases, {
         const content = plexVerificationBlockedMessage(plexVerification.state);
         return {
           status: "blocked",
-          checkpoint: { summary: control.checkpoint, plexVerification: plexVerification.state },
-          activity: { kind: "blocked", details: { userUpdate: content, reason: "plex_verification_exhausted", missingMedia: plexVerification.state.missingMedia } },
+          checkpoint: { summary: control.checkpoint, plexVerification: plexVerification.state, ...modelFields },
+          activity: { kind: "blocked", details: { userUpdate: content, reason: "plex_verification_exhausted", missingMedia: plexVerification.state.missingMedia, ...activityModelFields } },
           deliveries: [{ kind: "discord_message", payload: { content }, dedupeKey: "plex-blocked" }],
         };
       }
@@ -122,15 +125,15 @@ const repairCaseService = new RepairCaseService(repairCases, {
       return {
         wake,
         externalWait: control.externalWait,
-        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt, ...(plexVerification ? { plexVerification: plexVerification.state } : {}) },
-        activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake } },
+        checkpoint: { summary: control.checkpoint, waitingFor: control.provider ? `${control.provider}:${control.eventType}:${(control.mediaIds ?? (control.mediaId ? [control.mediaId] : [])).join(",")}` : control.resumeAt, ...(plexVerification ? { plexVerification: plexVerification.state } : {}), ...modelFields },
+        activity: { kind: "waiting", details: { userUpdate: control.userUpdate, wake, ...activityModelFields } },
         deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: "wait" }],
       };
     }
     return {
       status: control.status,
-      checkpoint: { summary: control.checkpoint },
-      activity: { kind: control.status, details: { userUpdate: control.userUpdate } },
+      checkpoint: { summary: control.checkpoint, ...modelFields },
+      activity: { kind: control.status, details: { userUpdate: control.userUpdate, ...activityModelFields } },
       deliveries: [{ kind: "discord_message", payload: { content: control.userUpdate }, dedupeKey: "finish" }],
     };
   },

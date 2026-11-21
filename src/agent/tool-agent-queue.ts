@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Logger } from "pino";
 import { isToolProfile, type ToolProfile } from "./tool-profiles.js";
-import { ToolAgentTaskStore, type ToolAgentTask, type ToolAgentTaskScope } from "../storage/tool-agent-tasks.js";
+import { ToolAgentTaskStore, type ToolAgentModelMeta, type ToolAgentTask, type ToolAgentTaskScope } from "../storage/tool-agent-tasks.js";
 
 export type ToolAgentTaskRequest = {
   title: string;
@@ -18,7 +18,8 @@ export type ToolAgentTaskRequest = {
   approvedAction?: string;
 };
 
-export type ToolAgentRunner = (task: ToolAgentTask, roles: string[], signal: AbortSignal, approvedAction?: string) => Promise<string>;
+export type ToolAgentRunOutput = string | { text: string; model?: ToolAgentModelMeta };
+export type ToolAgentRunner = (task: ToolAgentTask, roles: string[], signal: AbortSignal, approvedAction?: string) => Promise<ToolAgentRunOutput>;
 
 const MAX_QUEUED_GLOBAL = 100;
 const MAX_ACTIVE_PER_USER = 12;
@@ -188,12 +189,14 @@ export class ToolAgentQueueService {
     }, this.options.maxRuntimeMs ?? MAX_RUNTIME_MS);
 
     try {
-      const resultText = await this.runner(task, this.rolesByTask.get(id) ?? [], controller.signal, this.approvedActionByTask.get(id));
+      const output = await this.runner(task, this.rolesByTask.get(id) ?? [], controller.signal, this.approvedActionByTask.get(id));
+      const resultText = typeof output === "string" ? output : output.text;
+      const model = typeof output === "string" ? undefined : output.model;
       const settled = timedOut
         ? this.store.markFailed(id, `Tool-agent task ${id} exceeded max runtime`)
         : controller.signal.aborted
           ? this.store.markCancelled(id)
-          : this.store.markSucceeded(id, resultText, { text: resultText });
+          : this.store.markSucceeded(id, resultText, { text: resultText, ...(model ? { model } : {}) });
       if (settled) this.resolveWaiters(settled);
     } catch (error) {
       const settled = timedOut

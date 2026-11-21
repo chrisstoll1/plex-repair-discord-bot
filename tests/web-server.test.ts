@@ -46,13 +46,20 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     authPath: path.join(config.piAgentDir, "auth.json"),
     configured: false,
     status: { configured: false },
+    providers: [],
   };
   const piAuth = {
     refreshExpiredCredential: async () => piSnapshot,
     listAvailableModels: () => [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
     startLoginAndWaitForDeviceCode: async () => piSnapshot,
+    submitLoginInput: async () => piSnapshot,
     cancelLogin: () => piSnapshot,
     logout: () => piSnapshot,
+    setApiKey: async () => piSnapshot,
+    saveCustomProvider: async () => piSnapshot,
+    deleteCustomProvider: async () => piSnapshot,
+    discoverCustomProviderModels: async () => [{ id: "llama3.3", name: "llama3.3" }],
+    testModel: async ({ providerId, modelId }: { providerId: string; modelId?: string }) => ({ ok: true, provider: providerId, modelId: modelId ?? "gpt-5.6-sol", latencyMs: 42, reply: "OK" }),
   };
   const repairService = {
     receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
@@ -107,9 +114,39 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(updated.statusCode, 200);
   assert.deepEqual(updated.json().settings.discord.token, { configured: false });
   assert.equal(updated.json().settings.ai.serviceTier, "priority");
+  assert.deepEqual(updated.json().settings.ai.fallbacks, []);
+  const withFallbacks = await inject({
+    method: "PUT",
+    url: "/api/settings",
+    payload: {
+      ...settingsPayload(),
+      ai: {
+        modelProvider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        fallbacks: [
+          { modelProvider: "openai-codex", modelId: "gpt-5.6-sol" },
+          { modelProvider: "anthropic", modelId: "claude-fable-5" },
+          { modelProvider: "anthropic", modelId: "claude-fable-5" },
+        ],
+        thinkingLevel: "medium",
+        serviceTier: "priority",
+      },
+    },
+  });
+  assert.equal(withFallbacks.statusCode, 200);
+  assert.deepEqual(withFallbacks.json().settings.ai.fallbacks, [{ modelProvider: "anthropic", modelId: "claude-fable-5" }]);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/api-key", payload: { providerId: "openai", apiKey: "sk-test" } })).statusCode, 200);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/input", payload: { providerId: "anthropic", value: "code#state" } })).statusCode, 200);
+  assert.equal((await inject({ method: "PUT", url: "/api/pi-auth/custom", payload: { id: "local-ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", api: "openai-completions", requiresApiKey: false, models: [{ id: "llama3.3" }] } })).statusCode, 200);
+  assert.equal((await inject({ method: "DELETE", url: "/api/pi-auth/custom/local-ollama" })).statusCode, 200);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/custom/discover", payload: { baseUrl: "http://127.0.0.1:11434/v1" } })).statusCode, 200);
+  const testRes = await inject({ method: "POST", url: "/api/pi-auth/test", payload: { providerId: "openai-codex", modelId: "gpt-5.6-sol" } });
+  assert.equal(testRes.statusCode, 200);
+  assert.equal(testRes.json().result.ok, true);
+  assert.equal(testRes.json().result.reply, "OK");
   assert.equal(settings.getJson<{ serviceTier?: string }>("ai", {}).serviceTier, "priority");
   assert.equal(settings.getString("discord.token"), undefined);
-  assert.equal(restartCount, 1);
+  assert.equal(restartCount, 2);
   assert.equal(settings.getString("seerr.apiKey"), "never-return-seerr", "legacy settings saves keep Seerr credentials");
   const withSeerr = { ...settingsPayload(), seerr: { url: "http://seerr:5055", apiKey: { action: "replace", value: "new-seerr-secret" }, preferForRequests: true, userMappings: "107286271453356032:1", defaultUserId: 1 }, repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: true } };
   const connected = await inject({ method: "PUT", url: "/api/settings", payload: withSeerr });
@@ -132,9 +169,9 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.deepEqual((await inject({ method: "GET", url: "/api/pi-models" })).json(), {
     models: [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
   });
-  const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it" });
+  const repair = repairs.create({ guildId: "guild", threadId: "thread", source: "message", userId: "user", authorizationActor: "user", title: "Missing episode", objective: "Fix it", checkpoint: { summary: "Checked", lastModel: { provider: "anthropic", modelId: "claude-fable-5", fallback: true, attempted: ["openai-codex/gpt-5.6-sol", "anthropic/claude-fable-5"] } } });
   repairs.addMessage(repair.id, { role: "user", content: "The episode is missing", sourceMessageId: "discord-user", metadata: { userId: "user" } });
-  repairs.addActivity(repair.id, "progress", "I am checking it", "agent");
+  repairs.addActivity(repair.id, "progress", { userUpdate: "I am checking it", model: { provider: "anthropic", modelId: "claude-fable-5", fallback: true } }, "agent");
   repairs.addMessage(repair.id, { role: "assistant", content: "I am checking it", sourceMessageId: "discord-bot" });
   repairs.setWake(repair.id, { type: "arr_event", provider: "sonarr", eventType: "download", mediaId: "episode:42" });
   const webhookConfig = await inject({ method: "PUT", url: "/api/webhooks/config", payload: { publicBaseUrl: "https://repair.example.com", sonarrEnabled: true, radarrEnabled: false } });
@@ -147,10 +184,11 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(repairs.get(repair.id)?.status, "ready");
   const repairList = await inject({ method: "GET", url: "/api/repairs" });
   assert.equal(repairList.json().repairs[0].threadUrl, "https://discord.com/channels/guild/thread");
+  assert.deepEqual(repairList.json().repairs[0].model, { provider: "anthropic", modelId: "claude-fable-5", fallback: true, attempted: ["openai-codex/gpt-5.6-sol", "anthropic/claude-fable-5"] });
   const timeline = (await inject({ method: "GET", url: `/api/repairs/${repair.id}/timeline` })).json().timeline;
   assert.equal(timeline.some((entry: { type: string; source: string; actor?: string }) => entry.type === "user_message" && entry.source === "user" && entry.actor === "user"), true);
   assert.equal(timeline.filter((entry: { message?: string }) => entry.message === "I am checking it").length, 1);
-  assert.equal(timeline.some((entry: { source: string; actor?: string }) => entry.source === "bot" && entry.actor === "agent"), true);
+  assert.equal(timeline.some((entry: { source: string; actor?: string; model?: { provider: string; modelId: string } }) => entry.source === "bot" && entry.actor === "agent" && entry.model?.provider === "anthropic"), true);
   const clearedRepairs = await inject({ method: "DELETE", url: "/api/repairs" });
   assert.equal(clearedRepairs.statusCode, 200);
   assert.equal(clearedRepairs.json().deleted, 1);

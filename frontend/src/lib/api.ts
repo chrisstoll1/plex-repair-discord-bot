@@ -4,6 +4,11 @@ export type PortalSession = { enabled: boolean; authenticated: boolean; username
 let csrfToken: string | undefined;
 export function setPortalSession(session: PortalSession) { csrfToken = session.csrfToken; }
 
+export type AiFallbackTarget = {
+  modelProvider: string;
+  modelId: string;
+};
+
 export type Settings = {
   discord: {
     token: SecretValue;
@@ -21,6 +26,7 @@ export type Settings = {
   ai: {
     modelProvider: string;
     modelId: string;
+    fallbacks: AiFallbackTarget[];
     thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
     serviceTier: "default" | "priority";
   };
@@ -46,6 +52,13 @@ export type TaskPage = { tasks: AgentTask[]; counts: Record<AgentTaskStatus, num
 export type RepairFilter = "all" | "working" | "waiting" | "attention" | "completed";
 export type RepairPage = { repairs: RepairCase[]; counts: Record<RepairCaseStatus, number>; pagination: PageInfo };
 export type TimelinePage = { timeline: RepairCaseActivity[]; pagination: PageInfo };
+export type AiUsedModel = {
+  provider: string;
+  modelId: string;
+  fallback?: boolean;
+  attempted?: string[];
+};
+
 export type AgentTask = {
   id: string;
   parentTaskId?: string;
@@ -61,6 +74,7 @@ export type AgentTask = {
   input?: unknown;
   resultText?: string;
   result?: unknown;
+  model?: AiUsedModel;
   error?: string;
   attempts: number;
   createdAt: string;
@@ -75,6 +89,7 @@ export type RepairCase = {
   status: RepairCaseStatus;
   title: string;
   latestUpdate?: string;
+  model?: AiUsedModel;
   nextWakeAt?: string;
   threadUrl?: string;
   createdAt: string;
@@ -92,6 +107,7 @@ export type RepairCaseActivity = {
   actor?: string;
   message?: string;
   status?: RepairCaseStatus;
+  model?: AiUsedModel;
   details?: unknown;
   createdAt: string;
 };
@@ -106,19 +122,71 @@ export type WebhookConfig = {
   radarrLastReceivedAt?: string;
 };
 
+export type CustomProviderApi = "openai-completions" | "openai-responses" | "anthropic-messages";
+
+export type CustomModelConfig = {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
+export type CustomProviderInput = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  api: CustomProviderApi;
+  requiresApiKey: boolean;
+  apiKey?: SecretUpdate;
+  models: CustomModelConfig[];
+};
+
+export type AiProviderAuthSummary = {
+  id: string;
+  name: string;
+  kind: "builtin" | "custom";
+  description?: string;
+  configured: boolean;
+  authType?: "oauth" | "api_key" | "env" | "none";
+  source?: string;
+  label?: string;
+  supportsOAuth: boolean;
+  oauthFlow?: "device_code" | "copy_code";
+  oauthLabel?: string;
+  supportsEnterpriseDomain?: boolean;
+  supportsApiKey: boolean;
+  apiKeyLabel?: string;
+  modelCount: number;
+  credential?: { type: string; expiresAt?: string; expired?: boolean };
+  refresh?: { attemptedAt?: string; refreshedAt?: string; error?: string };
+  custom?: {
+    baseUrl: string;
+    api: CustomProviderApi;
+    requiresApiKey: boolean;
+    apiKeyConfigured: boolean;
+    models: CustomModelConfig[];
+  };
+};
+
 export type PiAuthSnapshot = {
   configured: boolean;
   status: { configured: boolean; source?: string; label?: string };
   credential?: { type: string; expiresAt?: string; expired?: boolean };
   refresh?: { attemptedAt?: string; refreshedAt?: string; error?: string };
   activeLogin?: {
+    providerId: string;
+    providerName: string;
     status: "pending" | "complete" | "cancelled" | "error";
     startedAt: string;
     completedAt?: string;
     deviceCode?: { userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number; expiresAt?: string };
+    authUrl?: { url: string; instructions?: string };
+    inputPrompt?: { type: "manual_code" | "text"; message: string; placeholder?: string };
     progress?: string;
     error?: string;
   };
+  providers: AiProviderAuthSummary[];
 };
 
 export type AiModel = {
@@ -127,6 +195,15 @@ export type AiModel = {
   name: string;
   reasoning: boolean;
   contextWindow: number;
+};
+
+export type PiModelTestResult = {
+  ok: boolean;
+  provider: string;
+  modelId: string;
+  latencyMs: number;
+  reply?: string;
+  error?: string;
 };
 
 export class ApiError extends Error {
@@ -187,9 +264,46 @@ export const api = {
   rotateWebhookSecret: () => request<WebhookConfig>("/api/webhooks/rotate-secret", { method: "POST" }),
   getPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth").then((response) => response.piAuth),
   getAiModels: () => request<{ models: AiModel[] }>("/api/pi-models").then((response) => response.models),
-  startPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/start", { method: "POST" }).then((response) => response.piAuth),
+  startPiAuth: (params?: { providerId?: string; enterpriseDomain?: string }) =>
+    request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/start", {
+      method: "POST",
+      ...(params ? { body: JSON.stringify(params) } : {}),
+    }).then((response) => response.piAuth),
+  submitPiAuthInput: (params: { providerId?: string; value: string }) =>
+    request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/input", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }).then((response) => response.piAuth),
   cancelPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/cancel", { method: "POST" }).then((response) => response.piAuth),
-  logoutPiAuth: () => request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/logout", { method: "POST" }).then((response) => response.piAuth),
+  logoutPiAuth: (providerId?: string) =>
+    request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/logout", {
+      method: "POST",
+      ...(providerId ? { body: JSON.stringify({ providerId }) } : {}),
+    }).then((response) => response.piAuth),
+  savePiApiKey: (providerId: string, apiKey: string) =>
+    request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/api-key", {
+      method: "POST",
+      body: JSON.stringify({ providerId, apiKey }),
+    }).then((response) => response.piAuth),
+  saveCustomAiProvider: (input: CustomProviderInput) =>
+    request<{ piAuth: PiAuthSnapshot }>("/api/pi-auth/custom", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }).then((response) => response.piAuth),
+  deleteCustomAiProvider: (providerId: string) =>
+    request<{ piAuth: PiAuthSnapshot }>(`/api/pi-auth/custom/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    }).then((response) => response.piAuth),
+  discoverCustomAiModels: (params: { baseUrl: string; apiKey?: string; providerId?: string }) =>
+    request<{ models: CustomModelConfig[] }>("/api/pi-auth/custom/discover", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }).then((response) => response.models),
+  testPiModel: (params: { providerId: string; modelId?: string }) =>
+    request<{ result: PiModelTestResult }>("/api/pi-auth/test", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }).then((response) => response.result),
 };
 
 function toSettingsUpdate(settings: Settings): SettingsUpdate {

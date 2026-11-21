@@ -6,7 +6,7 @@
 
 Plex Repairman is a Discord bot for diagnosing and repairing Plex, Sonarr, and Radarr media issues. Mention it in Discord, describe what is wrong, and it can inspect your media services, explain what it found, and run repairs allowed by your policy settings.
 
-Portal-managed AI authentication currently supports OpenAI Codex OAuth only.
+Portal-managed AI authentication supports OAuth sign-in, API keys across multiple providers, custom OpenAI/Anthropic-compatible endpoints, and an ordered primary/fallback model hierarchy.
 
 ## Capabilities
 
@@ -87,7 +87,7 @@ docker compose up -d
 http://localhost:3000
 ```
 
-The `/config` volume is required for persistent settings, secrets, repair context, task history, and OpenAI auth. Back up the entire directory as a unit.
+The `/config` volume is required for persistent settings, secrets, repair context, task history, and AI provider auth. Back up the entire directory as a unit.
 
 Use service URLs reachable from the container, such as `http://sonarr:8989`, `http://radarr:7878`, and `http://plex:32400`. For services on another machine, use their LAN addresses. Direct Docker or LAN URLs are preferable to tunnels and public proxies, which may time out during long release lookups.
 
@@ -102,7 +102,7 @@ For Docker-based TrueNAS releases (24.10 and newer), the Custom App YAML accepts
 1. Open `http://<host>:3000`. The portal opens immediately. Optionally enable **Require sign-in** under **Settings > Security**; no setup token or container-shell access is required.
 2. Open **Settings > Discord** for the bot token and application ID. Open **Settings > Connections** for Plex, Sonarr, Radarr and optional Seerr credentials.
    Seerr uses its configured server/profile defaults. The API key is encrypted and never returned by the settings API. Link Discord IDs in Seerr notification settings or provide explicit `DiscordID:SeerrUserID` mappings. An optional shared Seerr account ID can own unlinked requests; 0 requires a linked account. The effective Seerr user's permissions, quotas, and approval rules apply.
-3. Open **Settings > AI** to connect OpenAI Codex and choose the model, thinking level and timeouts.
+3. Open **Settings > AI** to connect one or more AI providers (OAuth, API key, or custom endpoint), configure your primary and fallback model hierarchy, test connectivity, and set thinking level and timeouts.
 4. Optionally configure **Automatic progress events** in **Settings > Connections**, copy each generated webhook URL, and add it in Sonarr or Radarr under `Settings > Connect` as a webhook for grab, download/import, upgrade, rename, and manual-interaction-required events.
 5. Configure guild/channel allowlists and repair roles in **Settings > Discord**. Configure confirmations, destructive actions and direct additions in **Settings > Repair policy**.
 6. Open **Overview** to review service connectivity and AI-auth status. Use **Repairs** and **Agent tasks** to inspect retained operational data.
@@ -152,7 +152,8 @@ When confirmation is disabled, an ongoing case may diagnose, repair, verify, wai
 | --- | --- |
 | `/config/plex-repairman.db` | Settings, complete repair-thread history, wake conditions, delivery state, processed messages, and agent-task history |
 | `/config/secrets.key` | Local key used to encrypt Discord and media-service credentials |
-| `/config/pi/auth.json` | Pi/OpenAI authentication data |
+| `/config/pi/auth.json` | Pi AI provider authentication data |
+| `/config/pi/models.json` | Custom OpenAI/Anthropic-compatible provider definitions (when configured) |
 
 Ordinary settings and retained message/task data are not encrypted. The database and `secrets.key` belong together; losing the key makes encrypted service credentials unrecoverable.
 
@@ -214,13 +215,13 @@ http://<host>:3000/health
 
 It returns `200` when the web process is alive. It intentionally does not depend on Discord, Plex, Sonarr, Radarr, or AI authentication so incomplete configuration does not cause container restart loops. Detailed media-service checks are available on `Overview`.
 
-Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.2-build.65.1`. A matching `v0.2.2` Git tag publishes stable image version `0.2.2` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
+Images are validated before publication. Builds from `master` use the package version followed by `-build.<run>.<attempt>`; for example `0.2.3-build.65.1`. A matching `v0.2.3` Git tag publishes stable image version `0.2.3` after verifying that its commit belongs to `master`. Local builds display `dev`. Pull requests and manual runs on other branches validate without publishing. See [CHANGELOG.md](CHANGELOG.md).
 
 | Tag | Use |
 | --- | --- |
 | `latest` | Current mutable build from `master` |
-| `0.2.2` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
-| `0.2.2-build.<run>.<attempt>` | Automatic build from `master` |
+| `0.2.3` | Stable release published by the matching Git tag; pin the digest for a catalog submission |
+| `0.2.3-build.<run>.<attempt>` | Automatic build from `master` |
 | `build-<run-number>.<run-attempt>` | Exact workflow attempt, including reruns |
 | `sha-<commit-sha>` | Build for a specific source commit |
 

@@ -7,7 +7,7 @@ const settings = {
   radarr: { url: "", apiKey: { configured: false } },
   plex: { url: "http://plex.local:32400", token: { configured: true } },
   seerr: { url: "", apiKey: { configured: false }, preferForRequests: true, userMappings: "", defaultUserId: 0 },
-  ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "medium", serviceTier: "default" },
+  ai: { provider: "openai-codex", modelProvider: "openai-codex", modelId: "gpt-5.6-sol", fallbacks: [], thinkingLevel: "medium", serviceTier: "default" },
   timeouts: { standardSeconds: 60, releaseLookupSeconds: 300 },
   repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: false },
 } as const;

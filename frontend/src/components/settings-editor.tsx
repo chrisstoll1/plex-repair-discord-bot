@@ -1,28 +1,60 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Eye, EyeOff, FlaskConical, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
-import { api, type AiModel, type Settings } from "../lib/api";
+import { api, type AiFallbackTarget, type AiModel, type PiModelTestResult, type Settings } from "../lib/api";
 import { settingsSchema } from "../lib/schemas";
 import { ErrorState, LoadingState } from "./states";
 import { useToast } from "./toast";
-import { Badge, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from "./ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from "./ui";
 import { SettingsSaveBar } from "./settings-save-bar";
 
 export type SettingsSection = "connections" | "discord" | "ai" | "repair";
 
-export function SettingsEditor({ mode }: { mode: SettingsSection }) {
+type SettingsEditorProps = {
+  mode: SettingsSection;
+  afterFields?: React.ReactNode;
+  extraDirty?: boolean;
+  extraSaving?: boolean;
+  onExtraSave?: () => Promise<void>;
+  onExtraReset?: () => void;
+};
+
+export function SettingsEditor({ mode, afterFields, extraDirty = false, extraSaving = false, onExtraSave, onExtraReset }: SettingsEditorProps) {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
   const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: api.getAiModels, enabled: mode === "ai" });
 
   if (settingsQuery.isPending) return <LoadingState label="Loading configuration" />;
   if (settingsQuery.isError) return <ErrorState error={settingsQuery.error} retry={() => settingsQuery.refetch()} />;
 
-  return <SettingsForm key={mode} mode={mode} settings={settingsQuery.data} models={modelsQuery.data ?? []} modelsPending={modelsQuery.isPending} modelsError={modelsQuery.error} />;
+  return <SettingsForm
+    key={mode}
+    mode={mode}
+    settings={settingsQuery.data}
+    models={modelsQuery.data ?? []}
+    modelsPending={modelsQuery.isPending}
+    modelsError={modelsQuery.error}
+    afterFields={afterFields}
+    extraDirty={extraDirty}
+    extraSaving={extraSaving}
+    onExtraSave={onExtraSave}
+    onExtraReset={onExtraReset}
+  />;
 }
 
-function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { mode: SettingsSection; settings: Settings; models: AiModel[]; modelsPending: boolean; modelsError: Error | null }) {
+function SettingsForm({ mode, settings, models, modelsPending, modelsError, afterFields, extraDirty, extraSaving, onExtraSave, onExtraReset }: {
+  mode: SettingsSection;
+  settings: Settings;
+  models: AiModel[];
+  modelsPending: boolean;
+  modelsError: Error | null;
+  afterFields?: React.ReactNode;
+  extraDirty: boolean;
+  extraSaving: boolean;
+  onExtraSave?: () => Promise<void>;
+  onExtraReset?: () => void;
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const form = useForm<Settings>({ resolver: zodResolver(settingsSchema), values: settings });
@@ -34,18 +66,32 @@ function SettingsForm({ mode, settings, models, modelsPending, modelsError }: { 
       queryClient.setQueryData(["settings"], data);
       queryClient.invalidateQueries({ queryKey: ["status"] });
       reset(data);
-      toast({ tone: "success", title: "Settings saved", description: "Your changes have been applied." });
     },
     onError: (error) => toast({ tone: "error", title: "Save failed", description: error.message }),
   });
 
-  const submit = handleSubmit((values) => mutation.mutateAsync(values));
+  const submit = handleSubmit(async (values) => {
+    const saveSettings = isDirty;
+    const saveExtra = extraDirty && Boolean(onExtraSave);
+    try {
+      if (saveSettings) await mutation.mutateAsync(values);
+      if (saveExtra) await onExtraSave!();
+      if (saveSettings || saveExtra) {
+        toast({ tone: "success", title: "Settings saved", description: "Your changes have been applied." });
+      }
+    } catch {
+      return;
+    }
+  });
+  const dirty = isDirty || extraDirty;
+  const saving = isSubmitting || mutation.isPending || extraSaving;
   return <form onSubmit={submit} noValidate className="space-y-5">
     {mode === "connections" && <ConnectionsFields form={{ register, control, setValue, watch, errors }} />}
     {mode === "discord" && <DiscordFields form={{ register, control, setValue, watch, errors }} />}
-    {mode === "ai" && <div className="grid gap-5 xl:grid-cols-2"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
+    {mode === "ai" && <div className="space-y-5"><AiModelFields form={{ register, control, setValue, watch, errors }} models={models} pending={modelsPending} error={modelsError} /><TimeoutFields form={{ register, control, setValue, watch, errors }} /></div>}
     {mode === "repair" && <RepairFields form={{ register, control, setValue, watch, errors }} />}
-    <SettingsSaveBar dirty={isDirty} saving={isSubmitting || mutation.isPending} onReset={() => reset(settings)} />
+    {afterFields}
+    <SettingsSaveBar dirty={dirty} saving={saving} onReset={() => { reset(settings); onExtraReset?.(); }} />
   </form>;
 }
 
@@ -85,24 +131,241 @@ function RepairFields({ form }: { form: FormParts }) {
 }
 
 function TimeoutFields({ form }: { form: FormParts }) {
-  return <Section title="Request timeouts" description="How long to wait for standard operations and release searches."><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={form.register} error={form.errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={form.register} error={form.errors.timeouts?.releaseLookupSeconds} type="number" /></Section>;
+  return <Section title="Request timeouts" description="How long to wait for standard operations and release searches."><div className="grid gap-4 sm:grid-cols-2"><TextField label="Standard timeout (seconds)" path="timeouts.standardSeconds" register={form.register} error={form.errors.timeouts?.standardSeconds} type="number" /><TextField label="Release lookup timeout (seconds)" path="timeouts.releaseLookupSeconds" register={form.register} error={form.errors.timeouts?.releaseLookupSeconds} type="number" /></div></Section>;
 }
 
 function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
+  const toast = useToast();
+  const [testResults, setTestResults] = useState<Record<string, PiModelTestResult>>({});
+  const [testingKey, setTestingKey] = useState<string | null>(null);
   const provider = form.watch("ai.modelProvider");
   const modelId = form.watch("ai.modelId");
+  const fallbacks = form.watch("ai.fallbacks") ?? [];
   const providers = [...new Set(models.map((model) => model.provider))].sort();
   const providerModels = models.filter((model) => model.provider === provider);
   const providerAvailable = providers.includes(provider);
   const modelAvailable = providerModels.some((model) => model.id === modelId);
   const providerField = form.register("ai.modelProvider");
+  const hasCodexInHierarchy = provider === "openai-codex" || fallbacks.some((item) => item.modelProvider === "openai-codex");
 
-  return <Section title="AI model" description="Choose from models available through authenticated providers.">
-    <div><Label htmlFor="model-provider">Model provider</Label><select id="model-provider" {...providerField} value={provider} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="">Select a provider</option>{provider && !providerAvailable && <option value={provider}>{provider} (Unavailable)</option>}{providers.map((value) => <option key={value} value={value}>{value}</option>)}</select>{form.errors.ai?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelProvider.message}</p>}</div>
-    <div><Label htmlFor="model-id">Model</Label><select id="model-id" {...form.register("ai.modelId")} value={modelId} aria-invalid={!!form.errors.ai?.modelId} disabled={!provider || pending} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60"><option value="">Select a model</option>{modelId && !modelAvailable && <option value={modelId}>{modelId} (Unavailable)</option>}{providerModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}</select>{form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}{pending && <p className="mt-1.5 text-xs text-zinc-500">Loading authenticated models...</p>}{error && <p className="mt-1.5 text-xs text-red-400">Could not load models: {error.message}</p>}{!pending && !error && models.length === 0 && <p className="mt-1.5 text-xs text-amber-300">Connect an AI provider before selecting a model.</p>}</div>
-    <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
-    <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">Priority requests faster processing from OpenAI Codex.</p></div>
+  const runModelTest = useMutation({
+    mutationFn: (params: { key: string; providerId: string; modelId?: string }) =>
+      api.testPiModel({ providerId: params.providerId, modelId: params.modelId }),
+    onMutate: ({ key }) => setTestingKey(key),
+    onSuccess: (result, { key }) => {
+      setTestResults((current) => ({ ...current, [key]: result }));
+      toast({
+        tone: result.ok ? "success" : "error",
+        title: result.ok ? `${result.provider}/${result.modelId} responded (${result.latencyMs}ms)` : `${result.provider}/${result.modelId || "model"} test failed`,
+        description: result.ok ? result.reply : result.error,
+      });
+    },
+    onError: (err, { key, providerId, modelId: targetModelId }) => {
+      setTestResults((current) => ({
+        ...current,
+        [key]: { ok: false, provider: providerId, modelId: targetModelId ?? "", latencyMs: 0, error: err.message },
+      }));
+      toast({ tone: "error", title: "Model test failed", description: err.message });
+    },
+    onSettled: () => setTestingKey(null),
+  });
+
+  const primaryTestKey = `${provider}\0${modelId}`;
+  const primaryTestResult = testResults[primaryTestKey];
+
+  const updateFallbacks = (next: AiFallbackTarget[]) => {
+    form.setValue("ai.fallbacks", next, { shouldDirty: true, shouldValidate: true });
+  };
+
+  const swapWithPrimary = (fallbackIndex: number) => {
+    const target = fallbacks[fallbackIndex];
+    if (!target) return;
+    const nextFallbacks = [...fallbacks];
+    nextFallbacks[fallbackIndex] = { modelProvider: provider, modelId };
+    form.setValue("ai.modelProvider", target.modelProvider, { shouldDirty: true, shouldValidate: true });
+    form.setValue("ai.modelId", target.modelId, { shouldDirty: true, shouldValidate: true });
+    updateFallbacks(nextFallbacks);
+  };
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    if (index === 0 && direction === -1) {
+      swapWithPrimary(0);
+      return;
+    }
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= fallbacks.length) return;
+    const next = [...fallbacks];
+    const current = next[index]!;
+    next[index] = next[targetIndex]!;
+    next[targetIndex] = current;
+    updateFallbacks(next);
+  };
+
+  const addFallback = () => {
+    const usedProviders = new Set([provider, ...fallbacks.map((item) => item.modelProvider)]);
+    const nextProvider = providers.find((item) => !usedProviders.has(item)) ?? providers[0] ?? provider ?? "";
+    const nextModels = models.filter((model) => model.provider === nextProvider);
+    const usedKeys = new Set([`${provider}\0${modelId}`, ...fallbacks.map((item) => `${item.modelProvider}\0${item.modelId}`)]);
+    const nextModel = nextModels.find((model) => !usedKeys.has(`${nextProvider}\0${model.id}`))?.id ?? nextModels[0]?.id ?? "";
+    updateFallbacks([...fallbacks, { modelProvider: nextProvider, modelId: nextModel }]);
+  };
+
+  const updateFallbackEntry = (index: number, patch: Partial<AiFallbackTarget>) => {
+    const next = fallbacks.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item));
+    updateFallbacks(next);
+  };
+
+  const removeFallback = (index: number) => {
+    updateFallbacks(fallbacks.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return <Section title="AI model & fallback hierarchy" description="Order your primary model and optional fallbacks. If the primary fails before taking actions, the next model is tried automatically.">
+    <div className="space-y-3 rounded-lg border border-line bg-ink/40 p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Badge tone="good">#1 Primary</Badge>
+          <span className="text-xs text-zinc-400">Used first for every request</span>
+        </div>
+        {fallbacks.length > 0 && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
+            <ArrowDown className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <div>
+          <Label htmlFor="model-provider">Model provider</Label>
+          <select id="model-provider" {...providerField} value={provider} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">
+            <option value="">Select a provider</option>
+            {provider && !providerAvailable && <option value={provider}>{provider} (Unavailable)</option>}
+            {providers.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          {form.errors.ai?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelProvider.message}</p>}
+        </div>
+        <div>
+          <Label htmlFor="model-id">Model</Label>
+          <select id="model-id" {...form.register("ai.modelId")} value={modelId} aria-invalid={!!form.errors.ai?.modelId} disabled={!provider || pending} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60">
+            <option value="">Select a model</option>
+            {modelId && !modelAvailable && <option value={modelId}>{modelId} (Unavailable)</option>}
+            {providerModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+          </select>
+          {form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!provider || testingKey === primaryTestKey}
+          onClick={() => runModelTest.mutate({ key: primaryTestKey, providerId: provider, modelId: modelId || undefined })}
+          aria-label="Test primary model"
+          className="h-10 shrink-0 px-3.5"
+        >
+          {testingKey === primaryTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+          Test
+        </Button>
+      </div>
+      {primaryTestResult && <ModelTestNotice result={primaryTestResult} />}
+    </div>
+
+    {fallbacks.map((fallback, index) => {
+      const fbModels = models.filter((model) => model.provider === fallback.modelProvider);
+      const fbProviderAvailable = providers.includes(fallback.modelProvider);
+      const fbModelAvailable = fbModels.some((model) => model.id === fallback.modelId);
+      const fbErrors = Array.isArray(form.errors.ai?.fallbacks) ? form.errors.ai.fallbacks[index] : undefined;
+      const fbTestKey = `${fallback.modelProvider}\0${fallback.modelId}`;
+      const fbTestResult = testResults[fbTestKey];
+      return (
+        <div key={index} className="space-y-3 rounded-lg border border-line bg-ink/30 p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <Badge tone="neutral">#{index + 2} Fallback</Badge>
+            <div className="flex items-center gap-1">
+              <Button type="button" variant="ghost" size="sm" onClick={() => moveFallback(index, -1)} aria-label={`Move fallback ${index + 1} up`}>
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={index === fallbacks.length - 1} onClick={() => moveFallback(index, 1)} aria-label={`Move fallback ${index + 1} down`}>
+                <ArrowDown className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => removeFallback(index)} aria-label={`Remove fallback ${index + 1}`}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <div>
+              <Label htmlFor={`fallback-provider-${index}`}>Fallback {index + 1} provider</Label>
+              <select
+                id={`fallback-provider-${index}`}
+                value={fallback.modelProvider}
+                onChange={(event) => {
+                  const nextProvider = event.target.value;
+                  const firstModel = models.find((model) => model.provider === nextProvider)?.id ?? "";
+                  updateFallbackEntry(index, { modelProvider: nextProvider, modelId: firstModel });
+                }}
+                className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"
+              >
+                <option value="">Select a provider</option>
+                {fallback.modelProvider && !fbProviderAvailable && <option value={fallback.modelProvider}>{fallback.modelProvider} (Unavailable)</option>}
+                {providers.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              {fbErrors?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelProvider.message}</p>}
+            </div>
+            <div>
+              <Label htmlFor={`fallback-model-${index}`}>Fallback {index + 1} model</Label>
+              <select
+                id={`fallback-model-${index}`}
+                value={fallback.modelId}
+                disabled={!fallback.modelProvider || pending}
+                onChange={(event) => updateFallbackEntry(index, { modelId: event.target.value })}
+                className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">Select a model</option>
+                {fallback.modelId && !fbModelAvailable && <option value={fallback.modelId}>{fallback.modelId} (Unavailable)</option>}
+                {fbModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+              </select>
+              {fbErrors?.modelId && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelId.message}</p>}
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!fallback.modelProvider || testingKey === fbTestKey}
+              onClick={() => runModelTest.mutate({ key: fbTestKey, providerId: fallback.modelProvider, modelId: fallback.modelId || undefined })}
+              aria-label={`Test fallback ${index + 1} model`}
+              className="h-10 shrink-0 px-3.5"
+            >
+              {testingKey === fbTestKey ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+              Test
+            </Button>
+          </div>
+          {fbTestResult && <ModelTestNotice result={fbTestResult} />}
+        </div>
+      );
+    })}
+
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <Button type="button" variant="secondary" size="sm" onClick={addFallback} disabled={fallbacks.length >= 10 || models.length === 0}>
+        <Plus className="h-3.5 w-3.5" />
+        Add fallback model
+      </Button>
+      {pending && <p className="text-xs text-zinc-500">Loading authenticated models...</p>}
+      {error && <p className="text-xs text-red-400">Could not load models: {error.message}</p>}
+      {!pending && !error && models.length === 0 && <p className="text-xs text-amber-300">Connect an AI provider above before selecting a model.</p>}
+    </div>
+
+    <div className="grid gap-4 sm:grid-cols-2">
+      <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
+      <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">{hasCodexInHierarchy ? "Priority requests faster processing when OpenAI Codex is used." : "Applies only when OpenAI Codex is in your model hierarchy."}</p></div>
+    </div>
   </Section>;
+}
+
+function ModelTestNotice({ result }: { result: PiModelTestResult }) {
+  return (
+    <div className={`flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-5 ${result.ok ? "border-signal/25 bg-signal/[.06] text-signal" : "border-red-500/25 bg-red-500/[.06] text-red-300"}`}>
+      {result.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+      <span className="break-words">
+        {result.ok ? `Test passed (${result.latencyMs}ms): ${result.reply}` : `Test failed: ${result.error}`}
+      </span>
+    </div>
+  );
 }
 
 function Section({ title, description, children }: { title: string; description: string; children: React.ReactNode }) { return <Card><CardHeader><CardTitle>{title}</CardTitle><p className="mt-1 text-xs text-zinc-500">{description}</p></CardHeader><CardContent className="space-y-5">{children}</CardContent></Card>; }
