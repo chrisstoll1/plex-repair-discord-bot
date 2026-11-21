@@ -24,6 +24,10 @@ export const settingsSchema = z.object({
   ai: z.object({
     modelProvider: z.string().min(1, "Model provider is required"),
     modelId: z.string(),
+    fallbacks: z.array(z.object({
+      modelProvider: z.string().min(1, "Fallback provider is required"),
+      modelId: z.string().min(1, "Fallback model is required"),
+    })).max(10),
     thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
     serviceTier: z.enum(["default", "priority"]),
   }),

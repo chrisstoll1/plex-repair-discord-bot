@@ -6,6 +6,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import { z } from "zod";
 import {
+  aiFallbackTargetSchema,
   aiSettingsSchema,
   readRuntimeSettings,
   seerrUserMappingsSchema,
@@ -52,6 +53,7 @@ const settingsUpdateSchema = z
       .object({
         modelProvider: nonEmptyTrimmedString,
         modelId: z.string().trim(),
+        fallbacks: z.array(aiFallbackTargetSchema).max(10).default([]),
         thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
         serviceTier: z.enum(["default", "priority"]).default("default"),
       })
@@ -85,6 +87,53 @@ const webhookConfigSchema = z.object({
   publicBaseUrl: optionalUrl,
   sonarrEnabled: z.boolean(),
   radarrEnabled: z.boolean(),
+}).strict();
+
+const piAuthStartSchema = z.object({
+  providerId: nonEmptyTrimmedString.optional(),
+  enterpriseDomain: z.string().trim().max(255).optional(),
+}).strict().optional();
+
+const piAuthInputSchema = z.object({
+  providerId: nonEmptyTrimmedString.optional(),
+  value: nonEmptyTrimmedString.max(4096),
+}).strict();
+
+const piAuthLogoutSchema = z.object({
+  providerId: nonEmptyTrimmedString.optional(),
+}).strict().optional();
+
+const piAuthApiKeySchema = z.object({
+  providerId: nonEmptyTrimmedString,
+  apiKey: nonEmptyTrimmedString.max(4096),
+}).strict();
+
+const customModelSchema = z.object({
+  id: nonEmptyTrimmedString.max(256),
+  name: z.string().trim().max(256).optional(),
+  reasoning: z.boolean().optional(),
+  contextWindow: z.number().int().min(1024).max(10_000_000).optional(),
+  maxTokens: z.number().int().min(128).max(1_000_000).optional(),
+}).strict();
+
+const customProviderSchema = z.object({
+  id: nonEmptyTrimmedString.max(48),
+  name: nonEmptyTrimmedString.max(120),
+  baseUrl: z.string().trim().url(),
+  api: z.enum(["openai-completions", "openai-responses", "anthropic-messages"]).default("openai-completions"),
+  requiresApiKey: z.boolean().default(true),
+  apiKey: secretUpdateSchema.optional(),
+  models: z.array(customModelSchema).min(1).max(100),
+}).strict();
+
+const customProviderParamsSchema = z.object({
+  id: nonEmptyTrimmedString.max(48),
+}).strict();
+
+const customProviderDiscoverSchema = z.object({
+  baseUrl: z.string().trim().url(),
+  apiKey: z.string().trim().max(4096).optional(),
+  providerId: nonEmptyTrimmedString.max(48).optional(),
 }).strict();
 
 type SettingsUpdate = z.infer<typeof settingsUpdateSchema>;
@@ -165,7 +214,7 @@ export async function createWebServer(
       uptimeSeconds: Math.floor(process.uptime()),
       services: [
         discordStatus(settings),
-        piAuthStatus(piSnapshot.configured),
+        piAuthStatus(piSnapshot, settings),
         sonarr,
         radarr,
         plex,
@@ -308,9 +357,46 @@ export async function createWebServer(
     await piAuth.refreshExpiredCredential();
     return { models: await piAuth.listAvailableModels() };
   });
-  app.post("/api/pi-auth/start", async () => ({ piAuth: publicPiAuth(await piAuth.startLoginAndWaitForDeviceCode()) }));
+  app.post("/api/pi-auth/start", async (request, reply) => {
+    const body = request.body === undefined || request.body === null ? undefined : parseOrReply(piAuthStartSchema, request.body, reply);
+    if (request.body !== undefined && request.body !== null && !body) return;
+    return {
+      piAuth: publicPiAuth(
+        await piAuth.startLoginAndWaitForDeviceCode(body?.providerId, { enterpriseDomain: body?.enterpriseDomain }),
+      ),
+    };
+  });
+  app.post("/api/pi-auth/input", async (request, reply) => {
+    const body = parseOrReply(piAuthInputSchema, request.body, reply);
+    if (!body) return;
+    return { piAuth: publicPiAuth(await piAuth.submitLoginInput(body.value, body.providerId)) };
+  });
   app.post("/api/pi-auth/cancel", async () => ({ piAuth: publicPiAuth(await piAuth.cancelLogin()) }));
-  app.post("/api/pi-auth/logout", async () => ({ piAuth: publicPiAuth(await piAuth.logout()) }));
+  app.post("/api/pi-auth/logout", async (request, reply) => {
+    const body = request.body === undefined || request.body === null ? undefined : parseOrReply(piAuthLogoutSchema, request.body, reply);
+    if (request.body !== undefined && request.body !== null && !body) return;
+    return { piAuth: publicPiAuth(await piAuth.logout(body?.providerId)) };
+  });
+  app.post("/api/pi-auth/api-key", async (request, reply) => {
+    const body = parseOrReply(piAuthApiKeySchema, request.body, reply);
+    if (!body) return;
+    return { piAuth: publicPiAuth(await piAuth.setApiKey(body.providerId, body.apiKey)) };
+  });
+  app.put("/api/pi-auth/custom", async (request, reply) => {
+    const body = parseOrReply(customProviderSchema, request.body, reply);
+    if (!body) return;
+    return { piAuth: publicPiAuth(await piAuth.saveCustomProvider(body)) };
+  });
+  app.delete("/api/pi-auth/custom/:id", async (request, reply) => {
+    const params = parseOrReply(customProviderParamsSchema, request.params, reply);
+    if (!params) return;
+    return { piAuth: publicPiAuth(await piAuth.deleteCustomProvider(params.id)) };
+  });
+  app.post("/api/pi-auth/custom/discover", async (request, reply) => {
+    const body = parseOrReply(customProviderDiscoverSchema, request.body, reply);
+    if (!body) return;
+    return { models: await piAuth.discoverCustomProviderModels(body) };
+  });
 
   app.get("/*", async (request, reply) => {
     if (request.url === "/api" || request.url.startsWith("/api/") || request.url.startsWith("/health/")) {
@@ -438,9 +524,17 @@ function sendError(reply: FastifyReply, statusCode: number, code: string, messag
 }
 
 function normalizeSettings(update: SettingsUpdate): SettingsUpdate {
+  const ai = aiSettingsSchema.pick({ modelProvider: true, modelId: true, fallbacks: true, thinkingLevel: true, serviceTier: true }).parse(update.ai);
+  const seen = new Set([`${ai.modelProvider}\0${ai.modelId}`]);
+  const fallbacks = ai.fallbacks.filter((item) => {
+    const key = `${item.modelProvider}\0${item.modelId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return {
     ...update,
-    ai: aiSettingsSchema.pick({ modelProvider: true, modelId: true, thinkingLevel: true, serviceTier: true }).parse(update.ai),
+    ai: { ...ai, fallbacks },
     timeouts: timeoutSettingsSchema.parse(update.timeouts),
     repair: repairSettingsSchema.parse(update.repair),
   };
@@ -497,6 +591,7 @@ function publicSettings(settings: RuntimeSettings) {
     ai: {
       modelProvider: settings.ai.modelProvider,
       modelId: settings.ai.modelId,
+      fallbacks: settings.ai.fallbacks,
       thinkingLevel: settings.ai.thinkingLevel,
       serviceTier: settings.ai.serviceTier,
     },
@@ -519,12 +614,55 @@ function discordStatus(settings: RuntimeSettings): ServiceStatus {
   };
 }
 
-function piAuthStatus(configured: boolean): ServiceStatus {
+function piAuthStatus(snapshot: PiAuthSnapshot, settings: RuntimeSettings): ServiceStatus {
+  const providers = snapshot.providers ?? [];
+  const configuredProviders = providers.filter((provider) => provider.configured);
+  const primaryProvider = providers.find((provider) => provider.id === settings.ai.modelProvider);
+  const fallbackProviders = settings.ai.fallbacks
+    .map((fallback) => providers.find((provider) => provider.id === fallback.modelProvider))
+    .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider?.configured));
+
+  if (primaryProvider?.configured) {
+    const uniqueFallbacks = new Set(fallbackProviders.map((provider) => provider.id));
+    uniqueFallbacks.delete(primaryProvider.id);
+    const fallbackNote = uniqueFallbacks.size > 0
+      ? ` (${uniqueFallbacks.size} fallback ${uniqueFallbacks.size === 1 ? "provider" : "providers"} ready)`
+      : "";
+    return {
+      name: "AI Auth",
+      state: "configured",
+      target: primaryProvider.name,
+      detail: `${primaryProvider.name} is configured${fallbackNote}.`,
+    };
+  }
+
+  if (fallbackProviders.length > 0) {
+    const firstFallback = fallbackProviders[0]!;
+    return {
+      name: "AI Auth",
+      state: "configured",
+      target: firstFallback.name,
+      detail: `Primary provider (${primaryProvider?.name ?? settings.ai.modelProvider}) is not connected; fallback ${firstFallback.name} is ready.`,
+    };
+  }
+
+  if (configuredProviders.length > 0 || snapshot.configured) {
+    const names = configuredProviders.map((provider) => provider.name).join(", ");
+    return {
+      name: "AI Auth",
+      state: "configured",
+      target: names || "Connected",
+      detail: configuredProviders.length > 0
+        ? `${configuredProviders.length} AI ${configuredProviders.length === 1 ? "provider is" : "providers are"} connected.`
+        : "AI auth is configured.",
+    };
+  }
+
   return {
-    name: "Pi Auth",
-    state: configured ? "configured" : "missing",
-    target: "OpenAI Codex",
-    detail: configured ? "Codex auth is configured." : "Start login to connect Codex auth.",
+    name: "AI Auth",
+    state: "missing",
+    target: "No AI provider",
+    detail: "Connect an AI provider in Settings → AI.",
   };
 }
 

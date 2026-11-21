@@ -12,7 +12,7 @@ const settings: Settings = {
   radarr: { url: "http://radarr:7878", apiKey: { configured: true } },
   plex: { url: "http://plex:32400", token: { configured: true } },
   seerr: { url: "", apiKey: { configured: false }, preferForRequests: true, userMappings: "", defaultUserId: 0 },
-  ai: { modelProvider: "openai-codex", modelId: "gpt-5.1-codex", thinkingLevel: "medium", serviceTier: "default" },
+  ai: { modelProvider: "openai-codex", modelId: "gpt-5.1-codex", fallbacks: [], thinkingLevel: "medium", serviceTier: "default" },
   timeouts: { standardSeconds: 30, releaseLookupSeconds: 60 },
   repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: false },
 };
@@ -92,5 +92,35 @@ describe("SettingsEditor", () => {
     expect(await screen.findByRole("option", { name: "GPT-5.1 Codex (gpt-5.1-codex)" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Model provider" })).toHaveValue("openai-codex");
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-5.1-codex");
+  });
+
+  it("lets the user add, reorder, and save fallback models in hierarchy order", async () => {
+    vi.spyOn(api, "getSettings").mockResolvedValue(settings);
+    vi.spyOn(api, "getAiModels").mockResolvedValue([
+      { provider: "anthropic", id: "claude-fable-5", name: "Claude Fable 5", reasoning: true, contextWindow: 200_000 },
+      { provider: "openai-codex", id: "gpt-5.1-codex", name: "GPT-5.1 Codex", reasoning: true, contextWindow: 200_000 },
+    ]);
+    const save = vi.spyOn(api, "updateSettings").mockImplementation(async (value) => value);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter([{ path: "/settings/ai", element: <SettingsEditor mode="ai" /> }], { initialEntries: ["/settings/ai"] });
+
+    render(<QueryClientProvider client={queryClient}><ToastProvider><RouterProvider router={router} /></ToastProvider></QueryClientProvider>);
+
+    expect(await screen.findByRole("combobox", { name: "Model provider" })).toHaveValue("openai-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Add fallback model" }));
+
+    expect(screen.getByRole("combobox", { name: "Fallback 1 provider" })).toHaveValue("anthropic");
+    expect(screen.getByRole("combobox", { name: "Fallback 1 model" })).toHaveValue("claude-fable-5");
+
+    fireEvent.click(screen.getByRole("button", { name: "Move fallback 1 up" }));
+    expect(screen.getByRole("combobox", { name: "Model provider" })).toHaveValue("anthropic");
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("claude-fable-5");
+    expect(screen.getByRole("combobox", { name: "Fallback 1 provider" })).toHaveValue("openai-codex");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    expect(save.mock.calls[0]?.[0].ai.modelProvider).toBe("anthropic");
+    expect(save.mock.calls[0]?.[0].ai.modelId).toBe("claude-fable-5");
+    expect(save.mock.calls[0]?.[0].ai.fallbacks).toEqual([{ modelProvider: "openai-codex", modelId: "gpt-5.1-codex" }]);
   });
 });

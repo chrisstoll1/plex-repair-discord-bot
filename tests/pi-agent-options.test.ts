@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { AiAuthenticationError, ModelUnavailableError } from "../src/agent/model-errors.js";
-import { PiAgentService, applyOpenAiCodexServiceTier, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel, type AgentRequestContext, type RepairCaseControlResult } from "../src/agent/pi-agent.js";
+import { PiAgentService, applyOpenAiCodexServiceTier, buildAiModelHierarchy, readAgentSessionResponse, repairProgressLimit, resolveConfiguredModel, runWithModelFallback, type AgentRequestContext, type RepairCaseControlResult } from "../src/agent/pi-agent.js";
 
 test("priority service tier is added only to OpenAI Codex payloads", () => {
   const payload = { model: "gpt-5.6-sol", stream: true };
@@ -122,4 +122,75 @@ test("valid tool-only lifecycle responses remain allowed while other empty respo
   const session = { messages: [assistant({ stopReason: "toolUse", content: [{ type: "toolCall", id: "finish", name: "finish_repair", arguments: {} }] })] };
   assert.equal(readAgentSessionResponse(session, true), "");
   assert.throws(() => readAgentSessionResponse(session), /completed without a response/);
+});
+
+test("model fallback hierarchy deduplicates candidates and falls back in order", async () => {
+  const candidates = buildAiModelHierarchy({
+    modelProvider: "openai-codex",
+    modelId: "gpt-6.1-sol",
+    fallbacks: [
+      { modelProvider: "openai-codex", modelId: "gpt-6.1-sol" },
+      { modelProvider: "anthropic", modelId: "claude-fable-5" },
+      { modelProvider: "local-ollama", modelId: "llama3.3" },
+      { modelProvider: "anthropic", modelId: "claude-fable-5" },
+    ],
+  });
+  assert.deepEqual(candidates, [
+    { provider: "openai-codex", modelId: "gpt-6.1-sol" },
+    { provider: "anthropic", modelId: "claude-fable-5" },
+    { provider: "local-ollama", modelId: "llama3.3" },
+  ]);
+
+  const tried: string[] = [];
+  const fallbacksLogged: string[] = [];
+  const value = await runWithModelFallback({
+    candidates,
+    runAttempt: async (candidate) => {
+      tried.push(`${candidate.provider}/${candidate.modelId}`);
+      if (candidate.provider === "openai-codex") throw new AiAuthenticationError("OAuth token expired");
+      if (candidate.provider === "anthropic") throw new Error("503 Service unavailable");
+      return { value: "recovered via local ollama" };
+    },
+    onFallback: ({ failed, next }) => fallbacksLogged.push(`${failed.provider}->${next.provider}`),
+  });
+  assert.equal(value, "recovered via local ollama");
+  assert.deepEqual(tried, ["openai-codex/gpt-6.1-sol", "anthropic/claude-fable-5", "local-ollama/llama3.3"]);
+  assert.deepEqual(fallbacksLogged, ["openai-codex->anthropic", "anthropic->local-ollama"]);
+});
+
+test("model fallback does not replay after side effects or cancellation", async () => {
+  const candidates = [
+    { provider: "openai-codex", modelId: "gpt-6.1-sol" },
+    { provider: "anthropic", modelId: "claude-fable-5" },
+  ];
+
+  const afterToolTried: string[] = [];
+  await assert.rejects(
+    runWithModelFallback({
+      candidates,
+      didExecuteSideEffects: () => true,
+      runAttempt: async (candidate) => {
+        afterToolTried.push(candidate.provider);
+        throw new Error("503 Service unavailable");
+      },
+    }),
+    /503 Service unavailable/,
+  );
+  assert.deepEqual(afterToolTried, ["openai-codex"]);
+
+  const controller = new AbortController();
+  const abortTried: string[] = [];
+  await assert.rejects(
+    runWithModelFallback({
+      candidates,
+      signal: controller.signal,
+      runAttempt: async (candidate) => {
+        abortTried.push(candidate.provider);
+        controller.abort(new Error("User cancelled"));
+        throw new Error("Request aborted");
+      },
+    }),
+    /Request aborted/,
+  );
+  assert.deepEqual(abortTried, ["openai-codex"]);
 });

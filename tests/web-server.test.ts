@@ -46,13 +46,19 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
     authPath: path.join(config.piAgentDir, "auth.json"),
     configured: false,
     status: { configured: false },
+    providers: [],
   };
   const piAuth = {
     refreshExpiredCredential: async () => piSnapshot,
     listAvailableModels: () => [{ provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true, contextWindow: 372000 }],
     startLoginAndWaitForDeviceCode: async () => piSnapshot,
+    submitLoginInput: async () => piSnapshot,
     cancelLogin: () => piSnapshot,
     logout: () => piSnapshot,
+    setApiKey: async () => piSnapshot,
+    saveCustomProvider: async () => piSnapshot,
+    deleteCustomProvider: async () => piSnapshot,
+    discoverCustomProviderModels: async () => [{ id: "llama3.3", name: "llama3.3" }],
   };
   const repairService = {
     receiveEvent: (event: Parameters<RepairCaseStore["receiveEvent"]>[0]) => repairs.receiveEvent(event),
@@ -107,9 +113,35 @@ test("web API redacts secrets, validates atomically, and serves the SPA", async 
   assert.equal(updated.statusCode, 200);
   assert.deepEqual(updated.json().settings.discord.token, { configured: false });
   assert.equal(updated.json().settings.ai.serviceTier, "priority");
+  assert.deepEqual(updated.json().settings.ai.fallbacks, []);
+  const withFallbacks = await inject({
+    method: "PUT",
+    url: "/api/settings",
+    payload: {
+      ...settingsPayload(),
+      ai: {
+        modelProvider: "openai-codex",
+        modelId: "gpt-5.6-sol",
+        fallbacks: [
+          { modelProvider: "openai-codex", modelId: "gpt-5.6-sol" },
+          { modelProvider: "anthropic", modelId: "claude-fable-5" },
+          { modelProvider: "anthropic", modelId: "claude-fable-5" },
+        ],
+        thinkingLevel: "medium",
+        serviceTier: "priority",
+      },
+    },
+  });
+  assert.equal(withFallbacks.statusCode, 200);
+  assert.deepEqual(withFallbacks.json().settings.ai.fallbacks, [{ modelProvider: "anthropic", modelId: "claude-fable-5" }]);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/api-key", payload: { providerId: "openai", apiKey: "sk-test" } })).statusCode, 200);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/input", payload: { providerId: "anthropic", value: "code#state" } })).statusCode, 200);
+  assert.equal((await inject({ method: "PUT", url: "/api/pi-auth/custom", payload: { id: "local-ollama", name: "Ollama", baseUrl: "http://127.0.0.1:11434/v1", api: "openai-completions", requiresApiKey: false, models: [{ id: "llama3.3" }] } })).statusCode, 200);
+  assert.equal((await inject({ method: "DELETE", url: "/api/pi-auth/custom/local-ollama" })).statusCode, 200);
+  assert.equal((await inject({ method: "POST", url: "/api/pi-auth/custom/discover", payload: { baseUrl: "http://127.0.0.1:11434/v1" } })).statusCode, 200);
   assert.equal(settings.getJson<{ serviceTier?: string }>("ai", {}).serviceTier, "priority");
   assert.equal(settings.getString("discord.token"), undefined);
-  assert.equal(restartCount, 1);
+  assert.equal(restartCount, 2);
   assert.equal(settings.getString("seerr.apiKey"), "never-return-seerr", "legacy settings saves keep Seerr credentials");
   const withSeerr = { ...settingsPayload(), seerr: { url: "http://seerr:5055", apiKey: { action: "replace", value: "new-seerr-secret" }, preferForRequests: true, userMappings: "107286271453356032:1", defaultUserId: 1 }, repair: { requireConfirmation: true, allowDestructive: false, allowDirectAdd: true } };
   const connected = await inject({ method: "PUT", url: "/api/settings", payload: withSeerr });

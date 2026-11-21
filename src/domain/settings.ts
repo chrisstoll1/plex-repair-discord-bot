@@ -36,10 +36,16 @@ export const seerrUserMappingsSchema = z.string().trim().max(20000).superRefine(
 });
 export type SeerrSettings = { url: string; apiKey: string; preferForRequests: boolean; userMappings: string; defaultUserId: number };
 
+export const aiFallbackTargetSchema = z.object({
+  modelProvider: z.string().trim().min(1),
+  modelId: z.string().trim().min(1),
+});
+
 export const aiSettingsSchema = z.object({
   provider: z.string().default("openai-codex"),
   modelProvider: z.string().default("openai-codex"),
   modelId: z.string().default(""),
+  fallbacks: z.array(aiFallbackTargetSchema).max(10).default([]),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
   serviceTier: z.enum(["default", "priority"]).default("default"),
 });
@@ -58,6 +64,7 @@ export const repairSettingsSchema = z.object({
 export type DiscordSettings = z.infer<typeof discordSettingsSchema>;
 export type ArrSettings = z.infer<typeof arrSettingsSchema>;
 export type PlexSettings = z.infer<typeof plexSettingsSchema>;
+export type AiFallbackTarget = z.infer<typeof aiFallbackTargetSchema>;
 export type AiSettings = z.infer<typeof aiSettingsSchema>;
 export type TimeoutSettings = z.infer<typeof timeoutSettingsSchema>;
 export type RepairSettings = z.infer<typeof repairSettingsSchema>;

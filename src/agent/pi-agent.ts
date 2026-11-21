@@ -26,7 +26,7 @@ import { createMediaClients } from "../services/service-factory.js";
 import { COORDINATOR_INSTRUCTIONS, REPAIR_AGENT_INSTRUCTIONS, REPAIR_CASE_INSTRUCTIONS, REPAIR_CASE_STATUS_INSTRUCTIONS, REPAIR_CASE_TITLE_INSTRUCTIONS, TOOL_AGENT_INSTRUCTIONS } from "./instructions.js";
 import { readPlexVerification, requireActivePlexScan, type PlexVerificationState } from "./plex-verification.js";
 import { authorizeRepair, canStartRepairWorker } from "./policy.js";
-import { classifyAiRequestError, ModelUnavailableError } from "./model-errors.js";
+import { AiAuthenticationError, classifyAiRequestError, ModelUnavailableError } from "./model-errors.js";
 import { normalizeExternalWait, type ExternalWait } from "./external-wait.js";
 import type { ToolAgentQueueService, ToolAgentTaskRequest } from "./tool-agent-queue.js";
 import { TOOL_PROFILES, isRepairToolProfile, isToolProfile, toolProfileNames, type ToolProfile } from "./tool-profiles.js";
@@ -99,6 +99,66 @@ export function applyOpenAiCodexServiceTier(
   if (provider !== "openai-codex" || serviceTier !== "priority") return payload;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
   return { ...payload, service_tier: serviceTier };
+}
+
+export type AiModelCandidate = {
+  provider: string;
+  modelId: string;
+};
+
+export function buildAiModelHierarchy(
+  ai: Pick<RuntimeSettings["ai"], "modelProvider" | "modelId" | "fallbacks">,
+): AiModelCandidate[] {
+  const candidates: AiModelCandidate[] = [];
+  const seen = new Set<string>();
+  const add = (provider: string, modelId: string) => {
+    const normalizedProvider = provider.trim();
+    const normalizedModelId = modelId.trim();
+    if (!normalizedProvider) return;
+    const key = `${normalizedProvider}\0${normalizedModelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ provider: normalizedProvider, modelId: normalizedModelId });
+  };
+  add(ai.modelProvider, ai.modelId);
+  for (const fallback of ai.fallbacks ?? []) {
+    add(fallback.modelProvider, fallback.modelId);
+  }
+  return candidates;
+}
+
+export async function runWithModelFallback<T>(params: {
+  candidates: readonly AiModelCandidate[];
+  signal?: AbortSignal;
+  runAttempt: (candidate: AiModelCandidate, index: number) => Promise<{ value: T }>;
+  didExecuteSideEffects?: () => boolean;
+  onFallback?: (info: { failed: AiModelCandidate; next: AiModelCandidate; error: unknown }) => void;
+}): Promise<T> {
+  const candidates = params.candidates.length > 0 ? params.candidates : [{ provider: "", modelId: "" }];
+  let firstError: unknown;
+  let lastError: unknown;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (params.signal?.aborted) {
+      throw params.signal.reason ?? new Error("Agent session was cancelled");
+    }
+    const candidate = candidates[index]!;
+    try {
+      const outcome = await params.runAttempt(candidate, index);
+      return outcome.value;
+    } catch (error) {
+      const failure = classifyAiRequestError(error);
+      if (firstError === undefined) firstError = failure;
+      lastError = failure;
+      if (params.signal?.aborted) throw failure;
+      if (params.didExecuteSideEffects?.()) throw failure;
+      const next = candidates[index + 1];
+      if (!next) break;
+      params.onFallback?.({ failed: candidate, next, error: failure });
+    }
+  }
+
+  throw lastError ?? firstError ?? new Error("No AI model candidates were available");
 }
 
 export function resolveConfiguredModel(
@@ -438,69 +498,97 @@ export class PiAgentService {
       modelsPath: `${this.config.piAgentDir}/models.json`,
     });
     const modelRegistry = new ModelRegistry(modelRuntime);
-    const model = resolveConfiguredModel(modelRegistry, settings.ai.modelProvider, settings.ai.modelId);
+    const candidates = buildAiModelHierarchy(settings.ai);
 
-    const settingsManager = SettingsManager.inMemory({
-      compaction: { enabled: true },
-      retry: { enabled: true, maxRetries: 2 },
+    let attemptExecutedTools = false;
+    return runWithModelFallback({
+      candidates,
+      signal: params.signal,
+      didExecuteSideEffects: () => attemptExecutedTools,
+      onFallback: ({ failed, next, error }) => {
+        this.logger?.warn(
+          { err: error, failedProvider: failed.provider, failedModel: failed.modelId, nextProvider: next.provider, nextModel: next.modelId },
+          "AI model attempt failed; falling back to next configured provider",
+        );
+      },
+      runAttempt: async (candidate) => {
+        attemptExecutedTools = false;
+        const model = resolveConfiguredModel(modelRegistry, candidate.provider, candidate.modelId);
+        if (model && candidates.length > 1 && !modelRuntime.hasConfiguredAuth(model.provider)) {
+          throw new AiAuthenticationError(`Missing API key or authentication for provider "${model.provider}"`);
+        }
+
+        const trackedTools = params.tools.map((tool) => ({
+          ...tool,
+          execute: async (...args: Parameters<typeof tool.execute>) => {
+            attemptExecutedTools = true;
+            return tool.execute(...args);
+          },
+        }));
+
+        const settingsManager = SettingsManager.inMemory({
+          compaction: { enabled: true },
+          retry: { enabled: true, maxRetries: 2 },
+        });
+
+        const loader = new DefaultResourceLoader({
+          cwd: process.cwd(),
+          agentDir: this.config.piAgentDir,
+          settingsManager,
+          systemPromptOverride: () => params.systemPrompt,
+          appendSystemPromptOverride: () => [],
+          noExtensions: true,
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+        });
+        await loader.reload();
+
+        const { session } = await createAgentSession({
+          cwd: process.cwd(),
+          agentDir: this.config.piAgentDir,
+          modelRuntime,
+          model,
+          thinkingLevel: params.thinkingLevel ?? settings.ai.thinkingLevel,
+          noTools: "all",
+          tools: trackedTools.map(getToolName),
+          customTools: trackedTools,
+          sessionManager: SessionManager.inMemory(),
+          settingsManager,
+          resourceLoader: loader,
+        });
+
+        const onPayload = session.agent.onPayload;
+        session.agent.onPayload = async (payload, requestModel) => {
+          const transformedPayload = (await onPayload?.(payload, requestModel)) ?? payload;
+          return applyOpenAiCodexServiceTier(transformedPayload, requestModel.provider, settings.ai.serviceTier);
+        };
+
+        const abortSession = () => void session.abort().catch((error: unknown) => this.logger?.warn({ error }, "Failed to abort Pi agent session"));
+        params.signal?.addEventListener("abort", abortSession, { once: true });
+
+        try {
+          if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
+          await session.prompt(params.prompt);
+          if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
+          return { value: readAgentSessionResponse(session, params.allowEmptyResponse) };
+        } catch (error) {
+          const failure = classifyAiRequestError(error);
+          if (!params.signal?.aborted) {
+            this.logger?.error({ err: failure, modelProvider: model?.provider ?? candidate.provider, modelId: model?.id ?? candidate.modelId }, "AI agent session failed");
+          }
+          throw failure;
+        } finally {
+          params.signal?.removeEventListener("abort", abortSession);
+          try {
+            if (session.isStreaming) await session.abort();
+          } finally {
+            session.dispose();
+          }
+        }
+      },
     });
-
-    const loader = new DefaultResourceLoader({
-      cwd: process.cwd(),
-      agentDir: this.config.piAgentDir,
-      settingsManager,
-      systemPromptOverride: () => params.systemPrompt,
-      appendSystemPromptOverride: () => [],
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-    });
-    await loader.reload();
-
-    const { session } = await createAgentSession({
-      cwd: process.cwd(),
-      agentDir: this.config.piAgentDir,
-      modelRuntime,
-      model,
-      thinkingLevel: params.thinkingLevel ?? settings.ai.thinkingLevel,
-      noTools: "all",
-      tools: params.tools.map(getToolName),
-      customTools: params.tools,
-      sessionManager: SessionManager.inMemory(),
-      settingsManager,
-      resourceLoader: loader,
-    });
-
-    const onPayload = session.agent.onPayload;
-    session.agent.onPayload = async (payload, requestModel) => {
-      const transformedPayload = (await onPayload?.(payload, requestModel)) ?? payload;
-      return applyOpenAiCodexServiceTier(transformedPayload, requestModel.provider, settings.ai.serviceTier);
-    };
-
-    const abortSession = () => void session.abort().catch((error: unknown) => this.logger?.warn({ error }, "Failed to abort Pi agent session"));
-    params.signal?.addEventListener("abort", abortSession, { once: true });
-
-    try {
-      if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
-      await session.prompt(params.prompt);
-      if (params.signal?.aborted) throw params.signal.reason ?? new Error("Agent session was cancelled");
-      return readAgentSessionResponse(session, params.allowEmptyResponse);
-    } catch (error) {
-      const failure = classifyAiRequestError(error);
-      if (!params.signal?.aborted) {
-        this.logger?.error({ err: failure, modelProvider: model?.provider, modelId: model?.id }, "AI agent session failed");
-      }
-      throw failure;
-    } finally {
-      params.signal?.removeEventListener("abort", abortSession);
-      try {
-        if (session.isStreaming) await session.abort();
-      } finally {
-        session.dispose();
-      }
-    }
   }
 
   private createOrchestrationTools(context: AgentRequestContext) {

@@ -44,3 +44,96 @@ test("device-code login maps SDK interactions and cancellation to the portal", a
   assert.equal((await service.cancelLogin()).activeLogin, undefined);
   assert.equal(cancelled, true);
 });
+
+test("supports API key auth, Anthropic copy-code OAuth, and custom OpenAI-compatible endpoints", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "repairman-multi-auth-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const service = new PiAuthService({ piAgentDir: root } as AppConfig);
+
+  const afterKey = await service.setApiKey("openai", "sk-synthetic-openai-key");
+  assert.doesNotMatch(JSON.stringify(afterKey), /sk-synthetic-openai-key/);
+  const openaiProvider = afterKey.providers.find((provider) => provider.id === "openai");
+  assert.equal(openaiProvider?.configured, true);
+  assert.equal(openaiProvider?.authType, "api_key");
+  assert.ok((await service.listAvailableModels()).some((model) => model.provider === "openai"));
+
+  const afterCustomNoKey = await service.saveCustomProvider({
+    id: "local-ollama",
+    name: "Local Ollama",
+    baseUrl: "http://127.0.0.1:11434/v1/",
+    api: "openai-completions",
+    requiresApiKey: false,
+    models: [{ id: "llama3.3", name: "Llama 3.3" }],
+  });
+  const ollama = afterCustomNoKey.providers.find((provider) => provider.id === "local-ollama");
+  assert.equal(ollama?.configured, true);
+  assert.equal(ollama?.kind, "custom");
+  assert.equal(ollama?.authType, "none");
+  assert.equal(ollama?.custom?.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.ok((await service.listAvailableModels()).some((model) => model.provider === "local-ollama" && model.id === "llama3.3"));
+
+  const afterCustomWithKey = await service.saveCustomProvider({
+    id: "litellm-proxy",
+    name: "LiteLLM Proxy",
+    baseUrl: "http://litellm.local:4000/v1",
+    api: "openai-completions",
+    requiresApiKey: true,
+    apiKey: { action: "replace", value: "sk-litellm-secret" },
+    models: [{ id: "gpt-4o" }],
+  });
+  assert.doesNotMatch(JSON.stringify(afterCustomWithKey), /sk-litellm-secret/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, "models.json"), "utf8"), /sk-litellm-secret/);
+  const litellm = afterCustomWithKey.providers.find((provider) => provider.id === "litellm-proxy");
+  assert.equal(litellm?.configured, true);
+  assert.equal(litellm?.custom?.apiKeyConfigured, true);
+
+  await assert.rejects(
+    service.saveCustomProvider({
+      id: "openai",
+      name: "Shadow OpenAI",
+      baseUrl: "http://example.test/v1",
+      api: "openai-completions",
+      requiresApiKey: false,
+      models: [{ id: "model-1" }],
+    }),
+    /conflicts with a built-in provider/,
+  );
+
+  const afterDelete = await service.deleteCustomProvider("local-ollama");
+  assert.equal(afterDelete.providers.some((provider) => provider.id === "local-ollama"), false);
+  const afterLogout = await service.logout("openai");
+  assert.equal(afterLogout.providers.find((provider) => provider.id === "openai")?.configured, false);
+});
+
+test("Anthropic copy-code OAuth pauses for manual input and completes when submitted", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "repairman-anthropic-oauth-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = await ModelRuntime.create({ authPath: path.join(root, "auth.json"), modelsPath: null });
+  t.mock.method(ModelRuntime, "create", async () => runtime);
+  let receivedCode = "";
+  t.mock.method(runtime, "login", async (providerId: string, type: string, interaction: Parameters<ModelRuntime["login"]>[2]) => {
+    assert.equal(providerId, "anthropic");
+    assert.equal(type, "oauth");
+    const method = await interaction.prompt({
+      type: "select",
+      message: "Select Anthropic login method:",
+      options: [
+        { id: "browser", label: "Browser login" },
+        { id: "copy_code", label: "Copy code login (headless)" },
+      ],
+    });
+    assert.equal(method, "copy_code");
+    interaction.notify({ type: "auth_url", url: "https://claude.ai/oauth/authorize?test=1", instructions: "Copy the code shown after sign-in." });
+    receivedCode = await interaction.prompt({ type: "manual_code", message: "Paste the code:", placeholder: "code#state" });
+  });
+
+  const service = new PiAuthService({ piAgentDir: root } as AppConfig);
+  const waiting = await service.startLoginAndWaitForDeviceCode("anthropic");
+  assert.equal(waiting.activeLogin?.providerId, "anthropic");
+  assert.equal(waiting.activeLogin?.authUrl?.url, "https://claude.ai/oauth/authorize?test=1");
+  assert.equal(waiting.activeLogin?.inputPrompt?.type, "manual_code");
+
+  const done = await service.submitLoginInput("abc#xyz", "anthropic");
+  assert.equal(receivedCode, "abc#xyz");
+  assert.equal(done.activeLogin, undefined);
+});

@@ -1,13 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Controller, type FieldError, type FieldPath, useForm } from "react-hook-form";
-import { api, type AiModel, type Settings } from "../lib/api";
+import { api, type AiFallbackTarget, type AiModel, type Settings } from "../lib/api";
 import { settingsSchema } from "../lib/schemas";
 import { ErrorState, LoadingState } from "./states";
 import { useToast } from "./toast";
-import { Badge, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from "./ui";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Switch } from "./ui";
 import { SettingsSaveBar } from "./settings-save-bar";
 
 export type SettingsSection = "connections" | "discord" | "ai" | "repair";
@@ -91,17 +91,167 @@ function TimeoutFields({ form }: { form: FormParts }) {
 function AiModelFields({ form, models, pending, error }: { form: FormParts; models: AiModel[]; pending: boolean; error: Error | null }) {
   const provider = form.watch("ai.modelProvider");
   const modelId = form.watch("ai.modelId");
+  const fallbacks = form.watch("ai.fallbacks") ?? [];
   const providers = [...new Set(models.map((model) => model.provider))].sort();
   const providerModels = models.filter((model) => model.provider === provider);
   const providerAvailable = providers.includes(provider);
   const modelAvailable = providerModels.some((model) => model.id === modelId);
   const providerField = form.register("ai.modelProvider");
+  const hasCodexInHierarchy = provider === "openai-codex" || fallbacks.some((item) => item.modelProvider === "openai-codex");
 
-  return <Section title="AI model" description="Choose from models available through authenticated providers.">
-    <div><Label htmlFor="model-provider">Model provider</Label><select id="model-provider" {...providerField} value={provider} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="">Select a provider</option>{provider && !providerAvailable && <option value={provider}>{provider} (Unavailable)</option>}{providers.map((value) => <option key={value} value={value}>{value}</option>)}</select>{form.errors.ai?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelProvider.message}</p>}</div>
-    <div><Label htmlFor="model-id">Model</Label><select id="model-id" {...form.register("ai.modelId")} value={modelId} aria-invalid={!!form.errors.ai?.modelId} disabled={!provider || pending} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60"><option value="">Select a model</option>{modelId && !modelAvailable && <option value={modelId}>{modelId} (Unavailable)</option>}{providerModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}</select>{form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}{pending && <p className="mt-1.5 text-xs text-zinc-500">Loading authenticated models...</p>}{error && <p className="mt-1.5 text-xs text-red-400">Could not load models: {error.message}</p>}{!pending && !error && models.length === 0 && <p className="mt-1.5 text-xs text-amber-300">Connect an AI provider before selecting a model.</p>}</div>
+  const updateFallbacks = (next: AiFallbackTarget[]) => {
+    form.setValue("ai.fallbacks", next, { shouldDirty: true, shouldValidate: true });
+  };
+
+  const swapWithPrimary = (fallbackIndex: number) => {
+    const target = fallbacks[fallbackIndex];
+    if (!target) return;
+    const nextFallbacks = [...fallbacks];
+    nextFallbacks[fallbackIndex] = { modelProvider: provider, modelId };
+    form.setValue("ai.modelProvider", target.modelProvider, { shouldDirty: true, shouldValidate: true });
+    form.setValue("ai.modelId", target.modelId, { shouldDirty: true, shouldValidate: true });
+    updateFallbacks(nextFallbacks);
+  };
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    if (index === 0 && direction === -1) {
+      swapWithPrimary(0);
+      return;
+    }
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= fallbacks.length) return;
+    const next = [...fallbacks];
+    const current = next[index]!;
+    next[index] = next[targetIndex]!;
+    next[targetIndex] = current;
+    updateFallbacks(next);
+  };
+
+  const addFallback = () => {
+    const usedProviders = new Set([provider, ...fallbacks.map((item) => item.modelProvider)]);
+    const nextProvider = providers.find((item) => !usedProviders.has(item)) ?? providers[0] ?? provider ?? "";
+    const nextModels = models.filter((model) => model.provider === nextProvider);
+    const usedKeys = new Set([`${provider}\0${modelId}`, ...fallbacks.map((item) => `${item.modelProvider}\0${item.modelId}`)]);
+    const nextModel = nextModels.find((model) => !usedKeys.has(`${nextProvider}\0${model.id}`))?.id ?? nextModels[0]?.id ?? "";
+    updateFallbacks([...fallbacks, { modelProvider: nextProvider, modelId: nextModel }]);
+  };
+
+  const updateFallbackEntry = (index: number, patch: Partial<AiFallbackTarget>) => {
+    const next = fallbacks.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item));
+    updateFallbacks(next);
+  };
+
+  const removeFallback = (index: number) => {
+    updateFallbacks(fallbacks.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return <Section title="AI model & fallback hierarchy" description="Order your primary model and optional fallbacks. If the primary fails before taking actions, the next model is tried automatically.">
+    <div className="space-y-3 rounded-lg border border-line bg-ink/40 p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Badge tone="good">#1 Primary</Badge>
+          <span className="text-xs text-zinc-400">Used first for every request</span>
+        </div>
+        {fallbacks.length > 0 && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => swapWithPrimary(0)} aria-label="Move primary down">
+            <ArrowDown className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <Label htmlFor="model-provider">Model provider</Label>
+          <select id="model-provider" {...providerField} value={provider} onChange={(event) => { providerField.onChange(event); form.setValue("ai.modelId", "", { shouldDirty: true, shouldValidate: true }); }} aria-invalid={!!form.errors.ai?.modelProvider} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">
+            <option value="">Select a provider</option>
+            {provider && !providerAvailable && <option value={provider}>{provider} (Unavailable)</option>}
+            {providers.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          {form.errors.ai?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelProvider.message}</p>}
+        </div>
+        <div>
+          <Label htmlFor="model-id">Model</Label>
+          <select id="model-id" {...form.register("ai.modelId")} value={modelId} aria-invalid={!!form.errors.ai?.modelId} disabled={!provider || pending} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60">
+            <option value="">Select a model</option>
+            {modelId && !modelAvailable && <option value={modelId}>{modelId} (Unavailable)</option>}
+            {providerModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+          </select>
+          {form.errors.ai?.modelId && <p className="mt-1.5 text-xs text-red-400">{form.errors.ai.modelId.message}</p>}
+        </div>
+      </div>
+    </div>
+
+    {fallbacks.map((fallback, index) => {
+      const fbModels = models.filter((model) => model.provider === fallback.modelProvider);
+      const fbProviderAvailable = providers.includes(fallback.modelProvider);
+      const fbModelAvailable = fbModels.some((model) => model.id === fallback.modelId);
+      const fbErrors = Array.isArray(form.errors.ai?.fallbacks) ? form.errors.ai.fallbacks[index] : undefined;
+      return (
+        <div key={index} className="space-y-3 rounded-lg border border-line bg-ink/30 p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <Badge tone="neutral">#{index + 2} Fallback</Badge>
+            <div className="flex items-center gap-1">
+              <Button type="button" variant="ghost" size="sm" onClick={() => moveFallback(index, -1)} aria-label={`Move fallback ${index + 1} up`}>
+                <ArrowUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={index === fallbacks.length - 1} onClick={() => moveFallback(index, 1)} aria-label={`Move fallback ${index + 1} down`}>
+                <ArrowDown className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => removeFallback(index)} aria-label={`Remove fallback ${index + 1}`}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label htmlFor={`fallback-provider-${index}`}>Fallback {index + 1} provider</Label>
+              <select
+                id={`fallback-provider-${index}`}
+                value={fallback.modelProvider}
+                onChange={(event) => {
+                  const nextProvider = event.target.value;
+                  const firstModel = models.find((model) => model.provider === nextProvider)?.id ?? "";
+                  updateFallbackEntry(index, { modelProvider: nextProvider, modelId: firstModel });
+                }}
+                className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"
+              >
+                <option value="">Select a provider</option>
+                {fallback.modelProvider && !fbProviderAvailable && <option value={fallback.modelProvider}>{fallback.modelProvider} (Unavailable)</option>}
+                {providers.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+              {fbErrors?.modelProvider && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelProvider.message}</p>}
+            </div>
+            <div>
+              <Label htmlFor={`fallback-model-${index}`}>Fallback {index + 1} model</Label>
+              <select
+                id={`fallback-model-${index}`}
+                value={fallback.modelId}
+                disabled={!fallback.modelProvider || pending}
+                onChange={(event) => updateFallbackEntry(index, { modelId: event.target.value })}
+                className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="">Select a model</option>
+                {fallback.modelId && !fbModelAvailable && <option value={fallback.modelId}>{fallback.modelId} (Unavailable)</option>}
+                {fbModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+              </select>
+              {fbErrors?.modelId && <p className="mt-1.5 text-xs text-red-400">{fbErrors.modelId.message}</p>}
+            </div>
+          </div>
+        </div>
+      );
+    })}
+
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <Button type="button" variant="secondary" size="sm" onClick={addFallback} disabled={fallbacks.length >= 10 || models.length === 0}>
+        <Plus className="h-3.5 w-3.5" />
+        Add fallback model
+      </Button>
+      {pending && <p className="text-xs text-zinc-500">Loading authenticated models...</p>}
+      {error && <p className="text-xs text-red-400">Could not load models: {error.message}</p>}
+      {!pending && !error && models.length === 0 && <p className="text-xs text-amber-300">Connect an AI provider above before selecting a model.</p>}
+    </div>
+
     <div><Label htmlFor="thinking">Thinking level</Label><select id="thinking" {...form.register("ai.thinkingLevel")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60">{["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => <option key={value}>{value}</option>)}</select></div>
-    <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">Priority requests faster processing from OpenAI Codex.</p></div>
+    <div><Label htmlFor="service-tier">Service tier</Label><select id="service-tier" {...form.register("ai.serviceTier")} className="mt-2 h-10 w-full rounded-md border border-line bg-ink px-3 text-sm text-zinc-100 outline-none focus:border-signal/60"><option value="default">Standard</option><option value="priority">Priority (Fast)</option></select><p className="mt-1.5 text-xs text-zinc-500">{hasCodexInHierarchy ? "Priority requests faster processing when OpenAI Codex is used." : "Applies only when OpenAI Codex is in your model hierarchy."}</p></div>
   </Section>;
 }
 
