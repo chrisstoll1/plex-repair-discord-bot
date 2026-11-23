@@ -19,7 +19,7 @@
     "audit:frontend": "node scripts/audit-frontend.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.6.0",
     "@fastify/static": "10.1.11",
     "better-sqlite3": "12.11.1",
     "discord.js": "14.26.4",
