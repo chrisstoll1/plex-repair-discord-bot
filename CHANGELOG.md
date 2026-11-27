@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- Find and repair future-dated Plex entries that keep TV shows and movies stuck in Recently Added. The repair uses the configured role and confirmation policy and checks the resulting dates in Plex.
+- Update the Pi Coding Agent SDK to 1.6.0.
+
 ## 0.2.3
 
 - Add multi-provider AI authentication supporting OAuth sign-in (OpenAI Codex, Anthropic, GitHub Copilot, xAI, Kimi), API keys (Anthropic, OpenAI, Google Gemini, OpenRouter, xAI, DeepSeek, Groq, Mistral, GitHub Copilot, Kimi), and custom OpenAI/Anthropic-compatible endpoints.

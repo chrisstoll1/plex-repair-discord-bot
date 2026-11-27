@@ -14,6 +14,7 @@ const WRITE_TOOLS = new Set([
   "refresh_plex_library_section",
   "split_plex_movie",
   "fix_plex_movie_match",
+  "fix_plex_future_added_dates",
   "trigger_sonarr_series_search",
   "trigger_sonarr_season_search",
   "trigger_sonarr_episode_search",
@@ -55,5 +56,5 @@ test("repair profiles expose every write tool once and remain service-scoped", (
   assert.equal(exposedWrites.length, WRITE_TOOLS.size);
   assert.equal(TOOL_PROFILES.sonarr_repair_agent.some((tool) => tool.includes("radarr")), false);
   assert.equal(TOOL_PROFILES.radarr_repair_agent.some((tool) => tool.includes("sonarr")), false);
-  assert.deepEqual(TOOL_PROFILES.plex_repair_agent.filter((tool) => WRITE_TOOLS.has(tool)), ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match"]);
+  assert.deepEqual(TOOL_PROFILES.plex_repair_agent.filter((tool) => WRITE_TOOLS.has(tool)), ["refresh_plex_library_section", "split_plex_movie", "fix_plex_movie_match", "fix_plex_future_added_dates"]);
 });
