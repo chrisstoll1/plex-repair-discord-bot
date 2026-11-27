@@ -33,6 +33,7 @@ Plex Repairman separates read-only diagnosis from write actions. Policy checks r
 - **Plex movie match fixes:**
   - **Split Apart** requires a current snapshot of every part ID and file path, never deletes media, and rediscovers item IDs by file path to verify both movies afterward.
   - **Fix Match** requires one isolated part and an exact verified TMDB/IMDb identity via the modern Plex Movie agent.
+- **Recently Added cleanup:** Finds episodes and movies whose Plex added date is in the future (usually from bad file timestamps), which pins them to the top of Recently Added. The fix resets only those future dates, defaulting to each item's original air or release date, refuses stale counts, and never removes media or files.
 - **Seerr requests:** Request new movies and TV seasons, edit pending request destinations, retry failed requests, and replace explicitly authorized 4K/standard requests after verifying the replacement (Seerr does not support changing an approved request's quality scope in place; removal follows destructive-repair policy and never requests media/file deletion).
 - **Direct additions:** Add movies to Radarr or series to Sonarr with existing roots/profiles and requested TV-season scope when **Allow direct Sonarr/Radarr additions** is enabled and **Prefer Seerr** is off.
 

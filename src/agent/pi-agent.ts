@@ -20,6 +20,7 @@ import type { ToolAgentTask } from "../storage/tool-agent-tasks.js";
 import type { ManualImportMode, ManualImportOverride } from "../services/arr-client.js";
 import type { PlexScannerLogQuery } from "../services/plex-scanner-logs.js";
 import type { PlexMovieSearch, PlexMovieMatchQuery, PlexMovieSplit, PlexMovieFixMatch } from "../services/plex-movies.js";
+import type { PlexAddedDateFix, PlexFutureAddedQuery } from "../services/plex-added-dates.js";
 import type { AddMovieParams, AddSeriesParams } from "../services/arr-add.js";
 import type { SeerrMediaType, SeerrRequestParams, SeerrRequestTarget, SeerrRequestUpdate, SeerrRequestReplacement } from "../services/seerr-client.js";
 import { createMediaClients } from "../services/service-factory.js";
@@ -1548,6 +1549,40 @@ export class PiAgentService {
           });
           if (policy) return policy;
           return toolResponse(await clients().plex.movies.fixMovieMatch(params));
+        },
+      }),
+      defineTool({
+        name: "find_plex_future_added_items",
+        label: "Find future-dated Plex items",
+        description: "Scan a TV or movie library for episodes/movies whose Plex added date is in the future, which pins them to the top of Recently Added. Returns affected shows/movies grouped by ratingKey with example dates. Optional title narrows groups.",
+        parameters: Type.Object({
+          sectionId: Type.Integer({ minimum: 1, description: "Plex library section ID from list_plex_libraries" }),
+          title: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Optional show/movie title substring filter" })),
+        }),
+        execute: async (_toolCallId, params: PlexFutureAddedQuery) => toolResponse(await clients().plex.addedDates.findFutureAdded(params)),
+      }),
+      defineTool({
+        name: "inspect_plex_future_added_dates",
+        label: "Inspect future Plex added dates",
+        description: "Count future-dated added dates for one show, season, episode or movie, including the show and season items themselves. Use its futureCount as expectedFutureCount for fix_plex_future_added_dates.",
+        parameters: Type.Object({ ratingKey: Type.String({ pattern: "^[1-9][0-9]*$", description: "Plex ratingKey of a show, season, episode or movie" }) }),
+        execute: async (_toolCallId, params: { ratingKey: string }) => toolResponse(await clients().plex.addedDates.inspectFutureAdded(params.ratingKey)),
+      }),
+      defineTool({
+        name: "fix_plex_future_added_dates",
+        label: "Fix future Plex added dates",
+        description: "Reset only future-dated Plex added dates beneath one show, season, episode or movie so it leaves Recently Added. Defaults each item to its original air/release date; items without one use the latest such date in the batch. Optional addedAt must be a past ISO date. Refuses stale counts. Never removes media or files. Requires confirmation when configured.",
+        parameters: Type.Object({
+          ratingKey: Type.String({ pattern: "^[1-9][0-9]*$", description: "Plex ratingKey of a show, season, episode or movie" }),
+          expectedFutureCount: Type.Integer({ minimum: 1, description: "futureCount from a fresh inspect_plex_future_added_dates" }),
+          addedAt: Type.Optional(Type.String({ description: "Optional past ISO 8601 date/timestamp to apply to every future-dated item" })),
+        }),
+        execute: async (_toolCallId, params: PlexAddedDateFix) => {
+          const policy = authorizeRepair(readRuntimeSettings(this.store), context, {
+            action: `Reset ${params.expectedFutureCount} future Plex added dates under item ${params.ratingKey} to ${params.addedAt ?? "original air dates"}; no media removed`,
+          });
+          if (policy) return policy;
+          return toolResponse(await clients().plex.addedDates.fixFutureAdded(params));
         },
       }),
       defineTool({

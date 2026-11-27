@@ -2,6 +2,7 @@ import type { Logger } from "pino";
 import { buildQueryPath, requestMedia } from "./http.js";
 import { downloadPlexLogs, queryPlexScannerLogs, validateScannerLogQuery, type PlexScannerLogQuery } from "./plex-scanner-logs.js";
 import { PlexMovieClient } from "./plex-movies.js";
+import { PlexAddedDateClient } from "./plex-added-dates.js";
 
 export type PlexConnectionSettings = {
   url?: string;
@@ -40,6 +41,7 @@ export class PlexClient {
     (path, method) => this.requestText(path, method),
     (movieId) => this.requestText(`https://metadata.provider.plex.tv/library/metadata/${movieId}?includeGuids=1`),
   );
+  readonly addedDates = new PlexAddedDateClient((path, method) => this.requestText(path, method));
   constructor(
     private readonly settings: PlexConnectionSettings,
     private readonly timeoutSeconds = 60,
